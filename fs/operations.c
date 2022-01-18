@@ -7,11 +7,17 @@
 
 static pthread_mutex_t single_global_lock;
 
+pthread_cond_t close_cond = PTHREAD_COND_INITIALIZER;
+bool closed = 0;
+size_t num_open_files = 0;
+
 int tfs_init() {
     state_init();
 
     if (pthread_mutex_init(&single_global_lock, 0) != 0)
         return -1;
+
+    closed = 0; // I'm assuming this is not an MT safe function, since it doesn't use the mutex
 
     /* create root inode */
     int root = inode_create(T_DIRECTORY);
@@ -35,8 +41,21 @@ static bool valid_pathname(char const *name) {
 }
 
 int tfs_destroy_after_all_closed() {
-    /* TO DO: implement this */
-    return 0;
+    if (pthread_mutex_lock(&single_global_lock) != 0) {
+        return -1;
+    }
+    while (num_open_files > 0) {
+        pthread_cond_wait(&close_cond, &single_global_lock);
+    }
+    closed = 1;
+    // it's not very efficient to unlock and then lock the mutex again
+    // in tfs_destroy, but this way the code is simpler. Thanks to the closed flag
+    // there are no race conditions associated with this unlock/lock sequence
+    if (pthread_mutex_unlock(&single_global_lock) != 0) {
+        closed = 0;
+        return -1;
+    }
+    return tfs_destroy();
 }
 
 int _tfs_lookup_unsynchronized(char const *name) {
@@ -115,7 +134,17 @@ static int _tfs_open_unsynchronized(char const *name, int flags) {
 int tfs_open(char const *name, int flags) {
     if (pthread_mutex_lock(&single_global_lock) != 0)
         return -1;
+    if (closed) {
+        pthread_mutex_unlock(&single_global_lock);
+        return -1;
+    }
+    num_open_files++;    
     int ret = _tfs_open_unsynchronized(name, flags);
+    // there was an error opening the file
+    if (ret == -1) {
+        num_open_files--;
+        pthread_cond_signal(&close_cond); // never returns an error
+    }
     if (pthread_mutex_unlock(&single_global_lock) != 0)
         return -1;
 
@@ -126,6 +155,11 @@ int tfs_close(int fhandle) {
     if (pthread_mutex_lock(&single_global_lock) != 0)
         return -1;
     int r = remove_from_open_file_table(fhandle);
+    // we successfully closed an open file
+    if (r == 0) {
+        num_open_files--;
+        pthread_cond_signal(&cond_close);
+    }
     if (pthread_mutex_unlock(&single_global_lock) != 0)
         return -1;
 
