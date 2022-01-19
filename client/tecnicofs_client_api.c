@@ -1,7 +1,28 @@
 #include "tecnicofs_client_api.h"
 
+int write_fd; // fd of server's FIFO, open for writes only
+int read_fd; // fd of this client's FIFO, open for reads only
+
 int tfs_mount(char const *client_pipe_path, char const *server_pipe_path) {
-    /* TODO: Implement this */
+    if (mkfifo(client_pipe_path, 0777) != 0) 
+        return -1;
+
+    if ((write_fd = open(server_pipe_path, O_WRONLY)) != 0) {
+        unlink(client_pipe_path);
+        return -1;
+    }
+
+    char msg[1 + FIFO_NAME_SIZE];
+    msg[0] = TFS_OP_CODE_MOUNT;
+    strncpy(msg, client_pipe_path, FIFO_NAME_SIZE); // No return values are reserved to indicate an error according to POSIX man page
+    
+    ssize_t written;
+    size_t total_written = 0, to_write = 1 + FIFO_NAME_SIZE;
+    
+    while ((written = write(write_fd, msg + total_written, to_write) ) {
+
+    } 
+    
     return -1;
 }
 
