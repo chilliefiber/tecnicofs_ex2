@@ -38,7 +38,7 @@ int main(int argc, char **argv) {
         return -1;
     }
    
-    // one extra for someone that attempts a connection when it is already full 
+    // one extra for someone that attempts a connection when it is already full. Later on we should have a next available because there can be more than one client and one might disconnect and not have been the last to connect
     int write_fds[S+1], num_clients = 0, session_id;
 
     char opcode;

@@ -2,6 +2,7 @@
 #define STATE_H
 
 #include "config.h"
+#include "common/common.h"
 
 #include <stdio.h>
 #include <stdlib.h>

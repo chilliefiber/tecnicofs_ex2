@@ -2,6 +2,7 @@
 #define COMMON_H
 
 #define FIFO_NAME_SIZE (40)
+#define MAX_FILE_NAME (40)
 
 /* tfs_open flags */
 enum {

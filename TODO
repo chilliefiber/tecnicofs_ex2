@@ -1,1 +1,2 @@
-1- do the rest of the functionality apart from tfs_mount
+1- Fix the warnings by assuming file names have 39 characters and one \0
+2- Implement operations apart from tfs_mount on the server side
