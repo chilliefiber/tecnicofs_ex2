@@ -23,8 +23,8 @@ int tfs_mount(char const *client_pipe_path, char const *server_pipe_path) {
     char msg[1 + FIFO_NAME_SIZE];
     char *next_byte = msg;
     msg[0] = TFS_OP_CODE_MOUNT;
-    strncpy(msg+1, client_pipe_path, FIFO_NAME_SIZE); // No return values are reserved to indicate an error according to POSIX man page
-    
+    strncpy(msg+1, client_pipe_path, FIFO_NAME_SIZE - 1); // No return values are reserved to indicate an error according to POSIX man page
+    msg[FIFO_NAME_SIZE] = '\0'; // só para tirar o warning
     ssize_t written;
     size_t to_write = 1 + FIFO_NAME_SIZE;
     
@@ -84,6 +84,7 @@ int tfs_open(char const *name, int flags) {
     char opcode = TFS_OP_CODE_OPEN;
     char file_name[MAX_FILE_NAME];
     strncpy(file_name, name, MAX_FILE_NAME); // assuming that name is a string
+    file_name[MAX_FILE_NAME-1] = '\0'; // now I can't assume name is a string because of the stupid warning
     if (write(write_fd, &opcode, sizeof(opcode)) != sizeof(opcode) || write(write_fd, &session_id, sizeof(session_id)) != sizeof(session_id) || write(write_fd, file_name, MAX_FILE_NAME) != MAX_FILE_NAME || write(write_fd, &flags, sizeof(flags)) != sizeof(flags)) {
         close(write_fd);
         close(read_fd);
