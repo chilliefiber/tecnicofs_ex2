@@ -54,7 +54,7 @@ int main(int argc, char **argv) {
         if (opcode == TFS_OP_CODE_MOUNT) {
             if (read(read_fd, buffer, FIFO_NAME_SIZE) != FIFO_NAME_SIZE)
                 continue;
-            buffer[FIFO_NAME_SIZE + 1] = '\0';
+            buffer[FIFO_NAME_SIZE + 1] = '\0'; // this might not be necessary because of the way I removed those warnings
             if (num_clients < S) 
                 session_id = num_clients;
             else
@@ -83,6 +83,9 @@ int main(int argc, char **argv) {
                 close(write_fds[num_clients-1]); // should close all of them
                 return -1;
             }
+        }
+        else if (opcode == TFS_OP_CODE_UNMOUNT) {
+            
         }
     }
  

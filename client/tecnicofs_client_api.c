@@ -11,6 +11,28 @@ int read_fd; // fd of this client's FIFO, open for reads only
 int session_id;
 char pipe_path[FIFO_NAME_SIZE];
 
+int write_all(int fd, const void *buffer, size_t len) {
+    ssize_t written;
+    while ((written = write(fd, buffer, len)) > 0 ) {
+        len -= (size_t) written;
+        if (len == 0)
+            return 0;
+        buffer += (size_t) written;
+    } 
+    return -1;
+}
+
+int read_all(int fd, void *buffer, size_t len) {
+    ssize_t num_bytes_read;
+    while ((num_bytes_read = read(fd, buffer, len)) > 0) {
+        len -= (size_t) num_bytes_read;
+        if (len == 0)
+            return 0;
+        buffer += (size_t) num_bytes_read;
+    }
+    return -1;
+}
+
 int tfs_mount(char const *client_pipe_path, char const *server_pipe_path) {
     if (mkfifo(client_pipe_path, 0777) != 0) 
         return -1;
@@ -19,23 +41,15 @@ int tfs_mount(char const *client_pipe_path, char const *server_pipe_path) {
         unlink(client_pipe_path);
         return -1;
     }
-
-    char msg[1 + FIFO_NAME_SIZE];
-    char *next_byte = msg;
+    // 1 for the opcode and one extra that won't be sent to fix 
+    // a warning
+    char msg[1 + FIFO_NAME_SIZE + 1];
     msg[0] = TFS_OP_CODE_MOUNT;
     strncpy(msg+1, client_pipe_path, FIFO_NAME_SIZE); // No return values are reserved to indicate an error according to POSIX man page
-    
-    ssize_t written;
-    size_t to_write = 1 + FIFO_NAME_SIZE;
-    
-    while ((written = write(write_fd, next_byte, to_write)) > 0 ) {
-        to_write -= (size_t) written;
-        if (to_write == 0)
-            break;
-        next_byte += (size_t) written;
-    } 
+    msg[1+ FIFO_NAME_SIZE] = '\0'; 
    
-    if (to_write != 0) {
+    if (write_all(write_fd, msg, 1 + FIFO_NAME_SIZE) != 0) {
+        close(write_fd);
         unlink(client_pipe_path);
         return -1;
     }
@@ -46,7 +60,7 @@ int tfs_mount(char const *client_pipe_path, char const *server_pipe_path) {
         return -1;
     }
 
-    if (read(read_fd, &session_id, sizeof(int)) != sizeof(int) || session_id < 0) {
+    if (read_all(read_fd, &session_id, sizeof(int)) != 0 || session_id < 0) {
         close(write_fd);
         close(read_fd);
         unlink(client_pipe_path);
@@ -57,15 +71,18 @@ int tfs_mount(char const *client_pipe_path, char const *server_pipe_path) {
 }
 
 int tfs_unmount() {
-    char opcode = TFS_OP_CODE_UNMOUNT;
-    if (write(write_fd, &opcode, sizeof(opcode)) != sizeof(opcode) || write(write_fd, &session_id, sizeof(session_id)) != sizeof(session_id)) {
+    size_t len = 1 + sizeof(session_id);
+    char buffer[len];
+    buffer[0] = TFS_OP_CODE_UNMOUNT;
+    memcpy(buffer + 1, &session_id, sizeof(session_id));
+    if (write_all(write_fd, buffer, len) != 0) {
         close(write_fd);
         close(read_fd);
         unlink(pipe_path);
         return -1;
     } 
     int ret_code;
-    if (read(read_fd, &ret_code, sizeof(int)) != sizeof(int)) {
+    if (read_all(read_fd, &ret_code, sizeof(int)) != 0) {
         close(write_fd);
         close(read_fd);
         unlink(pipe_path);
@@ -81,17 +98,26 @@ int tfs_unmount() {
 }
 
 int tfs_open(char const *name, int flags) {
-    char opcode = TFS_OP_CODE_OPEN;
-    char file_name[MAX_FILE_NAME];
-    strncpy(file_name, name, MAX_FILE_NAME); // assuming that name is a string
-    if (write(write_fd, &opcode, sizeof(opcode)) != sizeof(opcode) || write(write_fd, &session_id, sizeof(session_id)) != sizeof(session_id) || write(write_fd, file_name, MAX_FILE_NAME) != MAX_FILE_NAME || write(write_fd, &flags, sizeof(flags)) != sizeof(flags)) {
+    char file_name[MAX_FILE_NAME + 1]; // same as name but guaranteed to have the correct 40 bytes to send
+    strncpy(file_name, name, MAX_FILE_NAME);
+    file_name[MAX_FILE_NAME] = '\0'; // prevent warnings, otherwise useless
+    size_t len = 1 + sizeof(session_id) + MAX_FILE_NAME + sizeof(flags);
+    char buffer[len];
+    buffer[0] = TFS_OP_CODE_OPEN;
+    size_t offset = 1;
+    memcpy(buffer + offset, &session_id, sizeof(session_id));
+    offset += sizeof(session_id);
+    memcpy(buffer + offset, file_name, MAX_FILE_NAME);
+    offset += MAX_FILE_NAME;
+    memcpy(buffer + offset, &flags, sizeof(flags));
+    if (write_all(write_fd, buffer, len) != 0) {
         close(write_fd);
         close(read_fd);
         unlink(pipe_path);
         return -1;
     } 
     int ret_code;
-    if (read(read_fd, &ret_code, sizeof(ret_code)) != sizeof(ret_code)) {
+    if (read_all(read_fd, &ret_code, sizeof(ret_code)) != 0) {
         close(write_fd);
         close(read_fd);
         unlink(pipe_path);
@@ -101,15 +127,21 @@ int tfs_open(char const *name, int flags) {
 }
 
 int tfs_close(int fhandle) {
-    char opcode = TFS_OP_CODE_CLOSE;
-    if (write(write_fd, &opcode, 1) != 1 || write(write_fd, &session_id, sizeof(session_id)) != sizeof(session_id) || write(write_fd, &fhandle, sizeof(fhandle)) != sizeof(fhandle)) {
+    size_t len = 1 + sizeof(session_id) + sizeof(fhandle);
+    char buffer[len];
+    buffer[0] = TFS_OP_CODE_CLOSE;
+    size_t offset = 1;
+    memcpy(buffer + offset, &session_id, sizeof(session_id));
+    offset += sizeof(session_id);
+    memcpy(buffer + offset, &fhandle, sizeof(fhandle));
+    if (write_all(write_fd, buffer, len) != 0) {
         close(write_fd);
         close(read_fd);
         unlink(pipe_path);
         return -1;
     } 
     int ret_code;
-    if (read(read_fd, &ret_code, sizeof(ret_code)) != sizeof(ret_code)) {
+    if (read_all(read_fd, &ret_code, sizeof(ret_code)) != 0) {
         close(write_fd);
         close(read_fd);
         unlink(pipe_path);
@@ -119,32 +151,25 @@ int tfs_close(int fhandle) {
 }
 
 ssize_t tfs_write(int fhandle, void const *buffer, size_t len) {
-    char opcode = TFS_OP_CODE_WRITE;
-    if (write(write_fd, &opcode, 1) != 1 || write(write_fd, &session_id, sizeof(session_id)) != sizeof(session_id) || write(write_fd, &fhandle, sizeof(fhandle)) != sizeof(fhandle) || write(write_fd, &len, sizeof(len)) != sizeof(len)) {
+    size_t buf_len = 1 + sizeof(session_id) + sizeof(fhandle) + len; // Note: this is a VLA that might be big, should I malloc it?
+    char send_buffer[buf_len];
+    send_buffer[0] = TFS_OP_CODE_WRITE;
+    size_t offset = 1;
+    memcpy(send_buffer + offset, &session_id, sizeof(session_id));
+    offset += sizeof(session_id);
+    memcpy(send_buffer + offset, &fhandle, sizeof(fhandle));
+    offset += sizeof(fhandle);
+    memcpy(send_buffer + offset, &len, sizeof(len));
+    offset += sizeof(len);
+    memcpy(send_buffer + offset, buffer, len);
+    if (write_all(write_fd, buffer, len) != 0) {
         close(write_fd);
         close(read_fd);
         unlink(pipe_path);
         return -1;
     } 
-
-    ssize_t written;
-
-    while ((written = write(write_fd, buffer, len)) > 0) {
-        len -= (size_t) written;
-        buffer += (size_t) buffer;
-        if (len == 0)
-            break;
-    }
-
-    if (len != 0) {
-        close(write_fd);
-        close(read_fd);
-        unlink(pipe_path);
-        return -1;
-    }
-
     int ret_code;
-    if (read(read_fd, &ret_code, sizeof(ret_code)) != sizeof(ret_code)) {
+    if (read_all(read_fd, &ret_code, sizeof(ret_code)) != 0) {
         close(write_fd);
         close(read_fd);
         unlink(pipe_path);
@@ -154,54 +179,55 @@ ssize_t tfs_write(int fhandle, void const *buffer, size_t len) {
 }
 
 ssize_t tfs_read(int fhandle, void *buffer, size_t len) {
-    char opcode = TFS_OP_CODE_READ;
-    if (write(write_fd, &opcode, 1) != 1 || write(write_fd, &session_id, sizeof(session_id)) != sizeof(session_id) || write(write_fd, &fhandle, sizeof(fhandle)) != sizeof(fhandle) || write(write_fd, &len, sizeof(len)) != sizeof(len)) {
-        close(write_fd);
-        close(read_fd);
-        unlink(pipe_path);
-        return -1;
-    } 
-
-    int num_bytes;
-    if (read(read_fd, &num_bytes, sizeof(num_bytes)) != sizeof(num_bytes)) {
-        close(write_fd);
-        close(read_fd);
-        unlink(pipe_path);
-        return -1;
-    }
-
-    if (num_bytes == -1)
-        return -1;
-   
-    if (num_bytes == 0)
-        return 0;
-    len = (size_t) num_bytes; // weird cast 
-    ssize_t bytes_read;
-    while ((bytes_read = read(read_fd, buffer, len)) > 0) {
-        len -= (size_t) bytes_read;
-        buffer += (size_t) bytes_read;
-    } 
-    if (len != 0) { // there was an error in read: we might have read some bytes but the server told us there were more: it's an error in the syscall most likely
-        close(write_fd);
-        close(read_fd);
-        unlink(pipe_path);
-        return -1;
-    }
-
-    return (ssize_t) num_bytes;
-    
-}
-
-int tfs_shutdown_after_all_closed() {
-    char opcode = TFS_OP_CODE_SHUTDOWN_AFTER_ALL_CLOSED;
-    if (write(write_fd, &opcode, 1) != 1 || write(write_fd, &session_id, sizeof(session_id)) != sizeof(session_id)) {
+    size_t buf_len = 1 + sizeof(session_id) + sizeof(fhandle) + sizeof(len); 
+    char send_buffer[buf_len];
+    send_buffer[0] = TFS_OP_CODE_READ;
+    size_t offset = 1;
+    memcpy(send_buffer + offset, &session_id, sizeof(session_id));
+    offset += sizeof(session_id);
+    memcpy(send_buffer + offset, &fhandle, sizeof(fhandle));
+    offset += sizeof(fhandle);
+    memcpy(send_buffer + offset, &len, sizeof(len));
+    if (write_all(write_fd, buffer, len) != 0) {
         close(write_fd);
         close(read_fd);
         unlink(pipe_path);
         return -1;
     } 
     int ret_code;
-    if (read(read_fd, &ret_code, sizeof(ret_code)) != sizeof(ret_code)) {
+    if (read_all(read_fd, &ret_code, sizeof(ret_code)) != 0) { 
+        close(write_fd);
+        close(read_fd);
+        unlink(pipe_path);
+        return -1;
+    }
+    if (ret_code == 0 || ret_code == -1) // if it is 0 no bytes were read but there was no error, if it is -1 the server sent an error value
+        return ret_code;
+
+    // now we know ret_code is a positive value containing the number of bytes the server sent for reading
+    if (read_all(read_fd, buffer, (size_t) ret_code) != 0) {
+        close(write_fd);
+        close(read_fd);
+        unlink(pipe_path);
+        return -1;
+    }
+    return (ssize_t) ret_code;
+}
+
+int tfs_shutdown_after_all_closed() {
+    size_t len = 1 + sizeof(session_id);
+    char buffer[len];
+    buffer[0] = TFS_OP_CODE_SHUTDOWN_AFTER_ALL_CLOSED;
+    size_t offset = 1;
+    memcpy(buffer + offset, &session_id, sizeof(session_id));
+    if (write_all(write_fd, buffer, len) != 0) {
+        close(write_fd);
+        close(read_fd);
+        unlink(pipe_path);
+        return -1;
+    } 
+    int ret_code;
+    if (read_all(read_fd, &ret_code, sizeof(ret_code)) != 0) {
         close(write_fd);
         close(read_fd);
         unlink(pipe_path);
