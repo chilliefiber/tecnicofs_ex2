@@ -1,4 +1,5 @@
 #include "tecnicofs_client_api.h"
+#include "common/comms.h"
 
 #include <string.h>
 #include <sys/types.h>
@@ -11,27 +12,6 @@ int read_fd; // fd of this client's FIFO, open for reads only
 int session_id;
 char pipe_path[FIFO_NAME_SIZE];
 
-int write_all(int fd, const void *buffer, size_t len) {
-    ssize_t written;
-    while ((written = write(fd, buffer, len)) > 0 ) {
-        len -= (size_t) written;
-        if (len == 0)
-            return 0;
-        buffer += (size_t) written;
-    } 
-    return -1;
-}
-
-int read_all(int fd, void *buffer, size_t len) {
-    ssize_t num_bytes_read;
-    while ((num_bytes_read = read(fd, buffer, len)) > 0) {
-        len -= (size_t) num_bytes_read;
-        if (len == 0)
-            return 0;
-        buffer += (size_t) num_bytes_read;
-    }
-    return -1;
-}
 
 int tfs_mount(char const *client_pipe_path, char const *server_pipe_path) {
     if (mkfifo(client_pipe_path, 0777) != 0) 

@@ -7,7 +7,7 @@ CC ?= gcc
 LD ?= gcc
 
 # space separated list of directories with header files
-INCLUDE_DIRS := fs client .
+INCLUDE_DIRS := common fs client .
 # this creates a space separated list of -I<dir> where <dir> is each of the values in INCLUDE_DIRS
 INCLUDES = $(addprefix -I, $(INCLUDE_DIRS))
 
@@ -66,8 +66,8 @@ fmt: $(SOURCES) $(HEADERS)
 # Note the lack of a rule.
 # make uses a set of default rules, one of which compiles C binaries
 # the CC, LD, CFLAGS and LDFLAGS are used in this rule
-tests/client_server_simple_test: tests/client_server_simple_test.o client/tecnicofs_client_api.o
-fs/tfs_server: fs/operations.o fs/state.o
+tests/client_server_simple_test: tests/client_server_simple_test.o common/comms.o client/tecnicofs_client_api.o 
+fs/tfs_server: fs/operations.o fs/state.o common/comms.o
 tests/lib_destroy_after_all_closed_test: fs/operations.o fs/state.o
 tests/lib_destroy_after_all_closed_test_martim: fs/operations.o fs/state.o
 

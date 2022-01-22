@@ -4,9 +4,9 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <limits.h>
 
 #define S (1)
-#define BUFFER_SIZE (1000)
 
 typedef struct session {
     int session_id;
@@ -42,7 +42,7 @@ int main(int argc, char **argv) {
     int write_fds[S+1], num_clients = 0, session_id;
 
     char opcode;
-    char buffer[BUFFER_SIZE];
+    char buffer[PIPE_BUF]; // writes should be no bigger than PIPE_BUF, to make sure they are atomic in the FIFO
 
     while (1) {
         if (read(read_fd, &opcode, 1) != 1) {
@@ -54,7 +54,7 @@ int main(int argc, char **argv) {
         if (opcode == TFS_OP_CODE_MOUNT) {
             if (read(read_fd, buffer, FIFO_NAME_SIZE) != FIFO_NAME_SIZE)
                 continue;
-            buffer[FIFO_NAME_SIZE + 1] = '\0'; // this might not be necessary because of the way I removed those warnings
+            buffer[FIFO_NAME_SIZE] = '\0'; 
             if (num_clients < S) 
                 session_id = num_clients;
             else
@@ -85,7 +85,7 @@ int main(int argc, char **argv) {
             }
         }
         else if (opcode == TFS_OP_CODE_UNMOUNT) {
-            
+             
         }
     }
  
