@@ -67,6 +67,7 @@ int main() {
     }
     sleep(1); // this sleep is to make sure we have opened the files in fn_thread
     assert(pthread_create(&threads[RW_THREAD_COUNT], NULL, destroy, NULL) == 0); 
+    sleep(1); // this sleep is to make sure we have closed the fs
     assert(pthread_create(&threads[RW_THREAD_COUNT + 1], NULL, fail_to_open_prevent_starvation, NULL) == 0);
     for (int a = 0; a<THREAD_COUNT;a++) {
         assert(pthread_join(threads[a], NULL) == 0);
