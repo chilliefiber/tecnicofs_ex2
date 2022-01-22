@@ -8,11 +8,6 @@
 
 #define S (1)
 
-typedef struct session {
-    int session_id;
-    int write_fd; // possibly change to char[FIFO_NAME_SIZE]
-} session;
-
 int main(int argc, char **argv) {
 
     if (argc < 2) {
@@ -37,13 +32,12 @@ int main(int argc, char **argv) {
         unlink(pipename);
         return -1;
     }
-   
-    // one extra for someone that attempts a connection when it is already full. Later on we should have a next available because there can be more than one client and one might disconnect and not have been the last to connect
-    int write_fds[S+1], num_clients = 0, session_id;
-
+     
+    int write_fd, session_id;
+    size_t offset; 
     char opcode;
-    char buffer[PIPE_BUF]; // writes should be no bigger than PIPE_BUF, to make sure they are atomic in the FIFO
-
+    char buffer[PIPE_BUF]; // writes should be no bigger than PIPE_BUF, to make sure they are atomic in the FIFO. Actually it doesn't matter here in the server, but do it in the client
+    char filename[MAX_FILE_NAME];
     while (1) {
         if (read(read_fd, &opcode, 1) != 1) {
             perror("Error reading opcode");
@@ -52,40 +46,71 @@ int main(int argc, char **argv) {
             return -1;
         }
         if (opcode == TFS_OP_CODE_MOUNT) {
-            if (read(read_fd, buffer, FIFO_NAME_SIZE) != FIFO_NAME_SIZE)
-                continue;
+            if (read_all(read_fd, buffer, FIFO_NAME_SIZE) != 0) {
+                perror("Error reading fifo's name in mount");
+                return -1;
+            }
             buffer[FIFO_NAME_SIZE] = '\0'; 
-            if (num_clients < S) 
-                session_id = num_clients;
-            else
-                session_id = -1;
-            if ((write_fds[num_clients] = open(buffer, O_WRONLY)) == -1) {
+            session_id = 0;
+            if ((write_fd = open(buffer, O_WRONLY)) == -1) {
                 perror("Error opening client's fifo");
                 unlink(pipename);
                 close(read_fd);
                 return -1;
             }
 
-            if (write(write_fds[num_clients], &session_id, sizeof(int)) != sizeof(int)) {
+            if (write_all(write_fd, &session_id, sizeof(int)) != 0) {
                 perror("Error writing to client's fifo");
                 unlink(pipename);
                 close(read_fd);
-                close(write_fds[num_clients]); // should close all of them
+                close(write_fd); // should close all of them
                 return -1;
             }
-
-            if (session_id != -1)
-                num_clients++;
+            
+            /* This is extra code that will be useful when there are checks for too many sessions
             else if (close(write_fds[num_clients]) != 0) {
                 perror("Error closing extra client's fifo");
                 unlink(pipename);
                 close(read_fd);
                 close(write_fds[num_clients-1]); // should close all of them
                 return -1;
-            }
+            }*/
+            tfs_init();
         }
         else if (opcode == TFS_OP_CODE_UNMOUNT) {
-             
+            if (read_all(read_fd, &session_id, sizeof(session_id)) != 0) {
+                perror("Error reading session id in unmount");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+            session_id = 0; // we need to change this: right now unmount should always just return 0 as it does nothing apart
+                            // from closing the write file descriptor: we need to check
+            if (write_all(write_fd, &session_id, sizeof(int)) != 0) {
+                perror("Error writing to client's fifo in unmount");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+            if (close(write_fd) != 0) {
+                perror("Error closing write file descriptor in unmount");
+                unlink(pipename);
+                close(read_fd);
+                return -1;
+            }
+        }
+        else if (opcode == TFS_OP_CODE_OPEN) {
+            if (read_all(read_fd, buffer, sizeof(session_id) + MAX_FILE_NAME + sizeof(int)) != 0) {
+                perror("Error reading session id in unmount");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+            int flags;
+            memcpy(
         }
     }
  

@@ -1,2 +1,7 @@
-1- Fix the warnings by assuming file names have 39 characters and one \0
-2- Implement operations apart from tfs_mount on the server side
+1- Implement operations apart from tfs_mount on the server side: refactor code so that it calls a function for each operation
+2- Improve operations.c: global variable to see if the fs is initialized with a check on each function,
+and switch the mutex to static allocation
+3- Improve tfs_server.c: add checks that the session_id is active
+4- Do unlink before mkfifo: check error return
+5- Note that right now we are ignoring the session_id and not serialising it: once we move to the multithreaded server, we need to serialise it in the main function
+6- Make sure the client writes atomically to the pipe

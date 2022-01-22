@@ -1,0 +1,4 @@
+1- Dentro do state há chamadas a strlen: portanto os nomes têm de ser strings e só podem ter 39 caracteres para lá do '\0'
+
+*- A questão do MAX_FILE_NAME: posso incluir o common.h no state? Eu passei-o para o common porque tanto o cliente como o servidor precisam dele, no entanto o state também precisa. Vale a pena
+declarar outro .h na pasta common para essa variável?  (Nota para mim: incluí o common no state para funcionar por agora) R: ok
