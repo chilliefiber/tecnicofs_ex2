@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <limits.h>
 #include <string.h>
+#include <errno.h>
 
 #define S (1)
 
@@ -21,25 +22,29 @@ int main(int argc, char **argv) {
     printf("Starting TecnicoFS server with pipe called %s\n", pipename);
 
     // create server's fifo
-    
+    if (unlink(pipename) != 0 && errno != ENOENT) {
+        perror("Error unlinking");
+        return -1;
+    } 
     if (mkfifo(pipename, 0777) != 0) {
         perror("Error creating named pipe");
         return -1;
     }
    
     int read_fd = open(pipename, O_RDONLY);
-
+    printf("We opened it\n");
     if (read_fd == -1) {
         perror("Error opening server's FIFO for reading");
         unlink(pipename);
         return -1;
     }
      
-    int write_fd, session_id, flags, fhandle, ret_code;
+    int write_fd = -1, session_id, flags, fhandle, ret_code;
     size_t offset, len; 
     char opcode;
     char buffer[PIPE_BUF]; // writes should be no bigger than PIPE_BUF, to make sure they are atomic in the FIFO. Actually it doesn't matter here in the server, but do it in the client
     char filename[MAX_FILE_NAME];
+    char other_buffer[PIPE_BUF];
     while (1) {
         if (read(read_fd, &opcode, 1) != 1) {
             perror("Error reading opcode");
@@ -54,7 +59,10 @@ int main(int argc, char **argv) {
             }
             buffer[FIFO_NAME_SIZE] = '\0'; 
             session_id = 0;
-            if ((write_fd = open(buffer, O_WRONLY)) == -1) {
+            strcat(other_buffer, "~/so/projeto/tecnicofs_ex2/tests/");
+            strcat(other_buffer, buffer);
+            printf("%s\n", other_buffer);
+            if ((write_fd = open(other_buffer, O_WRONLY)) == -1) {
                 perror("Error opening client's fifo");
                 unlink(pipename);
                 close(read_fd);
@@ -146,7 +154,7 @@ int main(int argc, char **argv) {
             }
         }
         else if (opcode == TFS_OP_CODE_WRITE) {
-            if (read_all(read_fd, buffer, sizeof(session_id) + sizeof(fhandle) + sizeof(len) != 0)) {
+            if (read_all(read_fd, buffer, sizeof(session_id) + sizeof(fhandle) + sizeof(len)) != 0) {
                 perror("Error reading session id in unmount");
                 unlink(pipename);
                 close(read_fd);
@@ -176,7 +184,50 @@ int main(int argc, char **argv) {
             }
         }
         else if (opcode == TFS_OP_CODE_READ) {
-            
+            if (read_all(read_fd, buffer, sizeof(session_id) + sizeof(fhandle) + sizeof(len)) != 0) {
+                perror("Error reading session id in unmount");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+            memcpy(&session_id, buffer, sizeof(session_id));
+            offset += sizeof(session_id);
+            memcpy(&fhandle, buffer, sizeof(fhandle));
+            offset += sizeof(fhandle);
+            memcpy(&len, buffer, sizeof(len));
+            ret_code = (int) tfs_read(fhandle, buffer, len); // weird cast
+            if (write_all(write_fd, &ret_code, sizeof(int)) != 0) {
+                perror("Error writing to client's fifo in unmount");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+            if (ret_code > 0 && write_all(write_fd, buffer, (size_t) ret_code) != 0) {
+                perror("Error writing to client's fifo in unmount");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+        }
+        else if (opcode == TFS_OP_CODE_SHUTDOWN_AFTER_ALL_CLOSED) {
+            if (read_all(read_fd, &session_id, sizeof(session_id)) != 0) {
+                perror("Error reading session id in unmount");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+            ret_code = tfs_destroy_after_all_closed();
+            if (write_all(write_fd, &ret_code, sizeof(ret_code)) != 0) {
+                perror("Error writing to client's fifo in unmount");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
         }
     }
  

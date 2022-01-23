@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <errno.h>
 
 int write_fd; // fd of server's FIFO, open for writes only
 int read_fd; // fd of this client's FIFO, open for reads only
@@ -14,10 +15,12 @@ char pipe_path[FIFO_NAME_SIZE];
 
 
 int tfs_mount(char const *client_pipe_path, char const *server_pipe_path) {
+    if (unlink(client_pipe_path) != 0 && errno != ENOENT)
+        return -1;
     if (mkfifo(client_pipe_path, 0777) != 0) 
         return -1;
 
-    if ((write_fd = open(server_pipe_path, O_WRONLY)) != 0) {
+    if ((write_fd = open(server_pipe_path, O_WRONLY)) == -1) {
         unlink(client_pipe_path);
         return -1;
     }
@@ -34,7 +37,7 @@ int tfs_mount(char const *client_pipe_path, char const *server_pipe_path) {
         return -1;
     }
 
-    if ((read_fd = open(client_pipe_path, O_RDONLY)) != 0) {
+    if ((read_fd = open(client_pipe_path, O_RDONLY)) == -1) {
         close(write_fd);
         unlink(client_pipe_path);
         return -1;
