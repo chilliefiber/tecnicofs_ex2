@@ -1,4 +1,8 @@
 1- Dentro do state há chamadas a strlen: portanto os nomes têm de ser strings e só podem ter 39 caracteres para lá do '\0'
 
+2- No tfs_write estou no cliente a pôr tudo no mesmo write para ele poder ser atómico. No entanto isso tem o custo de alocar memória do tamanho da buffer que vamos escrever. Posso arriscar 
+não serem atómicos e não alocar memória do tamanho da buffer? Se for para alocar, deve ser na heap para o caso em que comecemos a ter de alocar muita memória (com os valores que devem ser testados não há problema). No write
+do servidor também tou com a cena de se devo alocar na heap ou na stack
+
 *- A questão do MAX_FILE_NAME: posso incluir o common.h no state? Eu passei-o para o common porque tanto o cliente como o servidor precisam dele, no entanto o state também precisa. Vale a pena
 declarar outro .h na pasta common para essa variável?  (Nota para mim: incluí o common no state para funcionar por agora) R: ok

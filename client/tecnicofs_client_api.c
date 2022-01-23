@@ -141,7 +141,8 @@ ssize_t tfs_write(int fhandle, void const *buffer, size_t len) {
     offset += sizeof(fhandle);
     memcpy(send_buffer + offset, &len, sizeof(len));
     offset += sizeof(len);
-    memcpy(send_buffer + offset, buffer, len);
+    if (len > 0) // there is nothing in the manpage about memcpy with n == 0
+        memcpy(send_buffer + offset, buffer, len);
     if (write_all(write_fd, buffer, len) != 0) {
         close(write_fd);
         close(read_fd);

@@ -1,10 +1,12 @@
 #include "operations.h"
+#include "common/comms.h"
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <limits.h>
+#include <string.h>
 
 #define S (1)
 
@@ -33,8 +35,8 @@ int main(int argc, char **argv) {
         return -1;
     }
      
-    int write_fd, session_id;
-    size_t offset; 
+    int write_fd, session_id, flags, fhandle, ret_code;
+    size_t offset, len; 
     char opcode;
     char buffer[PIPE_BUF]; // writes should be no bigger than PIPE_BUF, to make sure they are atomic in the FIFO. Actually it doesn't matter here in the server, but do it in the client
     char filename[MAX_FILE_NAME];
@@ -85,9 +87,9 @@ int main(int argc, char **argv) {
                 close(write_fd); // should close all of them
                 return -1;
             }
-            session_id = 0; // we need to change this: right now unmount should always just return 0 as it does nothing apart
-                            // from closing the write file descriptor: we need to check
-            if (write_all(write_fd, &session_id, sizeof(int)) != 0) {
+            ret_code = 0; // we need to change this: right now unmount should always just return 0 as it does nothing apart
+                          // from closing the write file descriptor: we need to check
+            if (write_all(write_fd, &ret_code, sizeof(int)) != 0) {
                 perror("Error writing to client's fifo in unmount");
                 unlink(pipename);
                 close(read_fd);
@@ -102,15 +104,79 @@ int main(int argc, char **argv) {
             }
         }
         else if (opcode == TFS_OP_CODE_OPEN) {
-            if (read_all(read_fd, buffer, sizeof(session_id) + MAX_FILE_NAME + sizeof(int)) != 0) {
+            if (read_all(read_fd, buffer, sizeof(session_id) + MAX_FILE_NAME + sizeof(flags)) != 0) {
                 perror("Error reading session id in unmount");
                 unlink(pipename);
                 close(read_fd);
                 close(write_fd); // should close all of them
                 return -1;
             }
-            int flags;
-            memcpy(
+            memcpy(&session_id, buffer, sizeof(session_id));
+            offset = sizeof(session_id);
+            memcpy(filename, buffer, MAX_FILE_NAME);
+            offset += MAX_FILE_NAME;
+            memcpy(&flags, buffer, sizeof(flags)); 
+            ret_code = tfs_open(filename, flags);
+            if (write_all(write_fd, &ret_code, sizeof(int)) != 0) {
+                perror("Error writing to client's fifo in unmount");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+        }
+        else if (opcode == TFS_OP_CODE_CLOSE) {
+            if (read_all(read_fd, buffer, sizeof(session_id) + sizeof(fhandle)) != 0) {
+                perror("Error reading session id in unmount");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+            memcpy(&session_id, buffer, sizeof(session_id));
+            offset = sizeof(session_id);
+            memcpy(&fhandle, buffer, sizeof(fhandle)); 
+            ret_code = tfs_close(fhandle);
+            if (write_all(write_fd, &ret_code, sizeof(int)) != 0) {
+                perror("Error writing to client's fifo in unmount");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+        }
+        else if (opcode == TFS_OP_CODE_WRITE) {
+            if (read_all(read_fd, buffer, sizeof(session_id) + sizeof(fhandle) + sizeof(len) != 0)) {
+                perror("Error reading session id in unmount");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+            memcpy(&session_id, buffer, sizeof(session_id));
+            offset += sizeof(session_id);
+            memcpy(&fhandle, buffer, sizeof(fhandle));
+            offset += sizeof(fhandle);
+            memcpy(&len, buffer, sizeof(len));
+            if (len > 0 && read_all(read_fd, buffer, len) != 0) {
+                perror("Error reading session id in unmount");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+            // note that if len is 0 it doesn't matter what buffer has
+            ret_code = (int) tfs_write(fhandle, buffer, len); // this is a weird cast: the communication protocol uses int but the fs uses ssize_t
+            if (write_all(write_fd, &ret_code, sizeof(int)) != 0) {
+                perror("Error writing to client's fifo in unmount");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+        }
+        else if (opcode == TFS_OP_CODE_READ) {
+            
         }
     }
  
