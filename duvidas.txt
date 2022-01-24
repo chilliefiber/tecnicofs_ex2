@@ -4,5 +4,9 @@
 não serem atómicos e não alocar memória do tamanho da buffer? Se for para alocar, deve ser na heap para o caso em que comecemos a ter de alocar muita memória (com os valores que devem ser testados não há problema). No write
 do servidor também tou com a cena de se devo alocar na heap ou na stack
 
+3- Alterei o operations para ter 1 variável global que indica se foi inicializado ou não, e para ter o mutex estático: assim se houver chamadas a open depois do destroy_after_all_closed o pthread_mutex_lock não dá erro
+porque o mutex não foi destruído. Para além disso, devolvo -1 nas funções que não são o init quando essa variável global indica que o fs está destruído. Essa variável global é estado partilhado mas não está protegida pelo
+mutex no tfs_init/destroy porque essas funções não são MT safe. Nas outras está
+
 *- A questão do MAX_FILE_NAME: posso incluir o common.h no state? Eu passei-o para o common porque tanto o cliente como o servidor precisam dele, no entanto o state também precisa. Vale a pena
 declarar outro .h na pasta common para essa variável?  (Nota para mim: incluí o common no state para funcionar por agora) R: ok

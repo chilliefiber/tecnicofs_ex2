@@ -5,17 +5,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-static pthread_mutex_t single_global_lock;
+static pthread_mutex_t single_global_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_cond_t close_cond = PTHREAD_COND_INITIALIZER;
-static bool closed;
+static bool closed; // for tfs_shutdown_after_all_closed
+static bool initialized = 0; // to prevent the file system from being used when not initialized. Currently not protected by the mutex
 static size_t num_open_files;
 
 int tfs_init() {
     state_init();
-
-    if (pthread_mutex_init(&single_global_lock, 0) != 0)
-        return -1;
 
     closed = 0; // I'm assuming this is not an MT safe function, since it doesn't use the mutex
     num_open_files = 0;
@@ -25,7 +23,7 @@ int tfs_init() {
     if (root != ROOT_DIR_INUM) {
         return -1;
     }
-
+    initialized = 1;
     return 0;
 }
 
@@ -34,13 +32,11 @@ int tfs_destroy() {
         return -1;
     }
     closed = 1;
+    initialized = 0;
     if (pthread_mutex_unlock(&single_global_lock) != 0) {
         return -1;
     }
     state_destroy();
-    if (pthread_mutex_destroy(&single_global_lock) != 0) {
-        return -1;
-    }
     return 0;
 }
 
@@ -52,17 +48,19 @@ int tfs_destroy_after_all_closed() {
     if (pthread_mutex_lock(&single_global_lock) != 0) {
         return -1;
     }
+    if (initialized == 0) {
+        pthread_mutex_unlock(&single_global_lock);
+        return -1;
+    }
     closed = 1;
     while (num_open_files > 0) {
         pthread_cond_wait(&close_cond, &single_global_lock);
     }
+    initialized = 0;
     if (pthread_mutex_unlock(&single_global_lock) != 0) {
         return -1;
     }
     state_destroy();
-    if (pthread_mutex_destroy(&single_global_lock) != 0) {
-        return -1;
-    }
     return 0;
 }
 
