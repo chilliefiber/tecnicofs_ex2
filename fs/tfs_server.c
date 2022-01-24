@@ -32,7 +32,6 @@ int main(int argc, char **argv) {
     }
    
     int read_fd = open(pipename, O_RDONLY);
-    printf("We opened it\n");
     if (read_fd == -1) {
         perror("Error opening server's FIFO for reading");
         unlink(pipename);
@@ -44,7 +43,6 @@ int main(int argc, char **argv) {
     char opcode;
     char buffer[PIPE_BUF]; // writes should be no bigger than PIPE_BUF, to make sure they are atomic in the FIFO. Actually it doesn't matter here in the server, but do it in the client
     char filename[MAX_FILE_NAME];
-    char other_buffer[PIPE_BUF];
     while (1) {
         if (read(read_fd, &opcode, 1) != 1) {
             perror("Error reading opcode");
@@ -59,16 +57,15 @@ int main(int argc, char **argv) {
             }
             buffer[FIFO_NAME_SIZE] = '\0'; 
             session_id = 0;
-            strcat(other_buffer, "~/so/projeto/tecnicofs_ex2/tests/");
-            strcat(other_buffer, buffer);
-            printf("%s\n", other_buffer);
-            if ((write_fd = open(other_buffer, O_WRONLY)) == -1) {
+            if ((write_fd = open(buffer, O_WRONLY)) == -1) {
                 perror("Error opening client's fifo");
                 unlink(pipename);
                 close(read_fd);
                 return -1;
             }
 
+            if (tfs_init() == -1)
+                session_id = -1;
             if (write_all(write_fd, &session_id, sizeof(int)) != 0) {
                 perror("Error writing to client's fifo");
                 unlink(pipename);
@@ -85,7 +82,6 @@ int main(int argc, char **argv) {
                 close(write_fds[num_clients-1]); // should close all of them
                 return -1;
             }*/
-            tfs_init();
         }
         else if (opcode == TFS_OP_CODE_UNMOUNT) {
             if (read_all(read_fd, &session_id, sizeof(session_id)) != 0) {
@@ -121,9 +117,9 @@ int main(int argc, char **argv) {
             }
             memcpy(&session_id, buffer, sizeof(session_id));
             offset = sizeof(session_id);
-            memcpy(filename, buffer, MAX_FILE_NAME);
+            memcpy(filename, buffer + offset, MAX_FILE_NAME);
             offset += MAX_FILE_NAME;
-            memcpy(&flags, buffer, sizeof(flags)); 
+            memcpy(&flags, buffer + offset, sizeof(flags)); 
             ret_code = tfs_open(filename, flags);
             if (write_all(write_fd, &ret_code, sizeof(int)) != 0) {
                 perror("Error writing to client's fifo in unmount");
@@ -143,7 +139,7 @@ int main(int argc, char **argv) {
             }
             memcpy(&session_id, buffer, sizeof(session_id));
             offset = sizeof(session_id);
-            memcpy(&fhandle, buffer, sizeof(fhandle)); 
+            memcpy(&fhandle, buffer + offset, sizeof(fhandle)); 
             ret_code = tfs_close(fhandle);
             if (write_all(write_fd, &ret_code, sizeof(int)) != 0) {
                 perror("Error writing to client's fifo in unmount");
@@ -162,10 +158,10 @@ int main(int argc, char **argv) {
                 return -1;
             }
             memcpy(&session_id, buffer, sizeof(session_id));
-            offset += sizeof(session_id);
-            memcpy(&fhandle, buffer, sizeof(fhandle));
+            offset = sizeof(session_id);
+            memcpy(&fhandle, buffer + offset, sizeof(fhandle));
             offset += sizeof(fhandle);
-            memcpy(&len, buffer, sizeof(len));
+            memcpy(&len, buffer + offset, sizeof(len));
             if (len > 0 && read_all(read_fd, buffer, len) != 0) {
                 perror("Error reading session id in unmount");
                 unlink(pipename);
@@ -192,10 +188,10 @@ int main(int argc, char **argv) {
                 return -1;
             }
             memcpy(&session_id, buffer, sizeof(session_id));
-            offset += sizeof(session_id);
-            memcpy(&fhandle, buffer, sizeof(fhandle));
+            offset = sizeof(session_id);
+            memcpy(&fhandle, buffer + offset, sizeof(fhandle));
             offset += sizeof(fhandle);
-            memcpy(&len, buffer, sizeof(len));
+            memcpy(&len, buffer + offset, sizeof(len));
             ret_code = (int) tfs_read(fhandle, buffer, len); // weird cast
             if (write_all(write_fd, &ret_code, sizeof(int)) != 0) {
                 perror("Error writing to client's fifo in unmount");

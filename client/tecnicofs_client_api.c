@@ -49,7 +49,7 @@ int tfs_mount(char const *client_pipe_path, char const *server_pipe_path) {
         unlink(client_pipe_path);
         return -1;
     }
-    
+    memcpy(pipe_path, client_pipe_path, FIFO_NAME_SIZE); 
     return 0;
 }
 
@@ -77,7 +77,7 @@ int tfs_unmount() {
         ret_code = -1;
     if (unlink(pipe_path) == -1)
         ret_code = -1;
-    return -1;
+    return ret_code;
 }
 
 int tfs_open(char const *name, int flags) {
@@ -134,7 +134,7 @@ int tfs_close(int fhandle) {
 }
 
 ssize_t tfs_write(int fhandle, void const *buffer, size_t len) {
-    size_t buf_len = 1 + sizeof(session_id) + sizeof(fhandle) + len; // Note: this is a VLA that might be big, should I malloc it?
+    size_t buf_len = 1 + sizeof(session_id) + sizeof(fhandle) + sizeof(len) + len; // Note: this is a VLA that might be big, should I malloc it?
     char send_buffer[buf_len];
     send_buffer[0] = TFS_OP_CODE_WRITE;
     size_t offset = 1;
@@ -146,7 +146,7 @@ ssize_t tfs_write(int fhandle, void const *buffer, size_t len) {
     offset += sizeof(len);
     if (len > 0) // there is nothing in the manpage about memcpy with n == 0
         memcpy(send_buffer + offset, buffer, len);
-    if (write_all(write_fd, buffer, len) != 0) {
+    if (write_all(write_fd, send_buffer, buf_len) != 0) {
         close(write_fd);
         close(read_fd);
         unlink(pipe_path);
@@ -172,7 +172,7 @@ ssize_t tfs_read(int fhandle, void *buffer, size_t len) {
     memcpy(send_buffer + offset, &fhandle, sizeof(fhandle));
     offset += sizeof(fhandle);
     memcpy(send_buffer + offset, &len, sizeof(len));
-    if (write_all(write_fd, buffer, len) != 0) {
+    if (write_all(write_fd, send_buffer, len) != 0) {
         close(write_fd);
         close(read_fd);
         unlink(pipe_path);
