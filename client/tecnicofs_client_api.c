@@ -172,7 +172,7 @@ ssize_t tfs_read(int fhandle, void *buffer, size_t len) {
     memcpy(send_buffer + offset, &fhandle, sizeof(fhandle));
     offset += sizeof(fhandle);
     memcpy(send_buffer + offset, &len, sizeof(len));
-    if (write_all(write_fd, send_buffer, len) != 0) {
+    if (write_all(write_fd, send_buffer, buf_len) != 0) {
         close(write_fd);
         close(read_fd);
         unlink(pipe_path);
