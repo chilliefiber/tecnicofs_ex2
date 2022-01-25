@@ -30,10 +30,10 @@ int get_session_id(bool *free_sessions) { // an int because session_id are ints
     return -1;
 }
 
-void read_from_buffer(char *pc_buffer, size_t *consptr, size_t len, void *dest) {
-    count -= len; // right now this is not valid, but will be at the end of the function
+void read_from_buffer(char *pc_buffer, size_t *consptr, size_t len, void *dest, size_t *count) {
+    *count -= len; // right now this is not valid, but will be at the end of the function
 
-    // if we need do not need to go around
+    // if not need to go around
     if ((*consptr) + len <= PC_BUF_SIZE) {
         memcpy(dest, pc_buffer + (*consptr), len);
         *consptr += len;
