@@ -1,4 +1,5 @@
-1- Implement operations apart from tfs_mount on the server side: refactor code so that it calls a function for each operation
+1- Problema na leitura do pc_buffer: é preciso fazer 1 write pc_buffer
+2- Implement operations apart from tfs_mount on the server side: refactor code so that it calls a function for each operation
 3- Improve tfs_server.c: add checks that the session_id is active
 5- Note that right now we are ignoring the session_id and not serialising it: once we move to the multithreaded server, we need to serialise it in the main function
 6- Make sure the client writes atomically to the pipe
