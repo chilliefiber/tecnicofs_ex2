@@ -9,13 +9,20 @@ static pthread_mutex_t single_global_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_cond_t close_cond = PTHREAD_COND_INITIALIZER;
 static bool closed; // for tfs_shutdown_after_all_closed
-static bool initialized = 0; // to prevent the file system from being used when not initialized. Currently not protected by the mutex
+static bool initialized = 0; // to prevent usage of an unitialized file system
 static size_t num_open_files;
 
 int tfs_init() {
+    if (pthread_mutex_lock(&single_global_lock) != 0) {
+        return -1;
+    }
+    if (initialized) {
+        pthread_mutex_unlock(&single_global_lock);
+        return -1;
+    }
     state_init();
 
-    closed = 0; // I'm assuming this is not an MT safe function, since it doesn't use the mutex
+    closed = false; 
     num_open_files = 0;
 
     /* create root inode */
@@ -23,7 +30,11 @@ int tfs_init() {
     if (root != ROOT_DIR_INUM) {
         return -1;
     }
-    initialized = 1;
+    initialized = true;
+    if (pthread_mutex_unlock(&single_global_lock) != 0) {
+        initialized = false;
+        return -1;
+    }
     return 0;
 }
 
@@ -31,12 +42,16 @@ int tfs_destroy() {
     if (pthread_mutex_lock(&single_global_lock) != 0) {
         return -1;
     }
-    closed = 1;
-    initialized = 0;
+    if (!initialized) {
+        pthread_mutex_unlock(&single_global_lock);
+        return -1;
+    }
+    initialized = false;  
+    closed = true;
+    state_destroy();
     if (pthread_mutex_unlock(&single_global_lock) != 0) {
         return -1;
     }
-    state_destroy();
     return 0;
 }
 
@@ -48,19 +63,19 @@ int tfs_destroy_after_all_closed() {
     if (pthread_mutex_lock(&single_global_lock) != 0) {
         return -1;
     }
-    if (initialized == 0) {
+    if (!initialized) {
         pthread_mutex_unlock(&single_global_lock);
         return -1;
     }
-    closed = 1;
+    closed = true;
     while (num_open_files > 0) {
         pthread_cond_wait(&close_cond, &single_global_lock);
     }
-    initialized = 0;
+    initialized = false;
+    state_destroy();
     if (pthread_mutex_unlock(&single_global_lock) != 0) {
         return -1;
     }
-    state_destroy();
     return 0;
 }
 
@@ -78,6 +93,10 @@ int _tfs_lookup_unsynchronized(char const *name) {
 int tfs_lookup(char const *name) {
     if (pthread_mutex_lock(&single_global_lock) != 0)
         return -1;
+    if (!initialized) {
+        pthread_mutex_unlock(&single_global_lock);
+        return -1;
+    }
     int ret = _tfs_lookup_unsynchronized(name);
     if (pthread_mutex_unlock(&single_global_lock) != 0)
         return -1;
@@ -140,7 +159,7 @@ static int _tfs_open_unsynchronized(char const *name, int flags) {
 int tfs_open(char const *name, int flags) {
     if (pthread_mutex_lock(&single_global_lock) != 0)
         return -1;
-    if (closed) {
+    if (closed || !initialized) {
         pthread_mutex_unlock(&single_global_lock);
         return -1;
     }
@@ -160,6 +179,10 @@ int tfs_open(char const *name, int flags) {
 int tfs_close(int fhandle) {
     if (pthread_mutex_lock(&single_global_lock) != 0)
         return -1;
+    if (!initialized) {
+        pthread_mutex_unlock(&single_global_lock);
+        return -1;
+    }
     int r = remove_from_open_file_table(fhandle);
     // we successfully closed an open file
     if (r == 0) {
@@ -219,6 +242,10 @@ static ssize_t _tfs_write_unsynchronized(int fhandle, void const *buffer,
 ssize_t tfs_write(int fhandle, void const *buffer, size_t to_write) {
     if (pthread_mutex_lock(&single_global_lock) != 0)
         return -1;
+    if (!initialized) {
+        pthread_mutex_unlock(&single_global_lock);
+        return -1;
+    }
     ssize_t ret = _tfs_write_unsynchronized(fhandle, buffer, to_write);
     if (pthread_mutex_unlock(&single_global_lock) != 0)
         return -1;
@@ -263,6 +290,10 @@ static ssize_t _tfs_read_unsynchronized(int fhandle, void *buffer, size_t len) {
 ssize_t tfs_read(int fhandle, void *buffer, size_t len) {
     if (pthread_mutex_lock(&single_global_lock) != 0)
         return -1;
+    if (!initialized) {
+        pthread_mutex_unlock(&single_global_lock);
+        return -1;
+    }
     ssize_t ret = _tfs_read_unsynchronized(fhandle, buffer, len);
     if (pthread_mutex_unlock(&single_global_lock) != 0)
         return -1;
