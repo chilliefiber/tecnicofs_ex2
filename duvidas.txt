@@ -17,7 +17,14 @@ porque o mutex não foi destruído. Para além disso, devolvo -1 nas funções q
 
 7- Devemos fazer o init quando fazem unmount depois do shutdown? Ou o init é só 1 vez antes de tudo?
 
-8- Pus a producer consumer buffer a só sinalizar mensagens completas
+8- Pus a producer consumer buffer a só sinalizar mensagens completas: a lógica era para não estar sempre a trancar e destrancar o mutex para ir ler cada variável: no entanto, como está
+tranca a tarefa toda enquanto a tarefa executa as coisas todas..
+
+9- O que fazer quando falham dentro da thread? Imediatamente devolver NULL ou esperar pelo unmount para fazer close dos fd? Ou não fazer return NULL, para a thread continuar ativa, visto
+que ninguém vai fazer join?
+
+10- Devo ler o session_id dentro da thread ou posso só não o enviar e ver disso só na thread principal? Se tenho de enviar, devo verificar dentro da thread que está certo? Nota para mim: se sim,
+coloquei essas todas no recv_id é só comparar com o session_id
 
 *- A questão do MAX_FILE_NAME: posso incluir o common.h no state? Eu passei-o para o common porque tanto o cliente como o servidor precisam dele, no entanto o state também precisa. Vale a pena
 declarar outro .h na pasta common para essa variável?  (Nota para mim: incluí o common no state para funcionar por agora) R: ok

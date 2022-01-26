@@ -13,27 +13,32 @@
 #define PC_BUF_SIZE (PIPE_BUF) // PIPE_BUF chosen because this way it can fit an entire message from the client
 
 pthread_mutex_t mutex[S] = {PTHREAD_MUTEX_INITIALIZER};
+pthread_mutex_t free_session_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t can_write[S] = {PTHREAD_COND_INITIALIZER};
 pthread_cond_t can_read[S] = {PTHREAD_COND_INITIALIZER};
 size_t prodptr[S] = {0};
 size_t consptr[S] = {0};
 size_t count[S] = {0};
 char pc_buffer[S][PIPE_BUF]; 
+char taken_session[S] = {0};
+
+int free_session_id(int session_id) {
+    if (pthread_mutex_lock(&
+}
 
 int get_session_id(bool *free_sessions) { // an int because session_id are ints
     for (int i = 0; i < S; i++) {
         if (free_sessions[i]) {
-            free_sessions[i] = false;
+            free_sessions[i] = 0;
             return i;
         }
     }
     return -1;
 }
 
-void read_from_buffer(char *pc_buffer, size_t *consptr, size_t len, void *dest, size_t *count) {
+void _read_from_buffer_unsychronized(void *dest, size_t len, char *pc_buffer, size_t *consptr, size_t *count) {
     *count -= len; // right now this is not valid, but will be at the end of the function
-
-    // if not need to go around
+    // if we do not need to go around
     if ((*consptr) + len <= PC_BUF_SIZE) {
         memcpy(dest, pc_buffer + (*consptr), len);
         *consptr += len;
@@ -48,17 +53,35 @@ void read_from_buffer(char *pc_buffer, size_t *consptr, size_t len, void *dest, 
     *consptr = to_read_from_start; // no need to check if it is PC_BUF_SIZE: since we read some from the end, at most it is the value of *consptr at the start of the function
 }
 
+int read_from_buffer(void *dest, size_t len, int session_id) {
+    int ret_code = 0;
+    /*
+    if ((ret_code = pthread_mutex_lock(&mutex[session_id])) != 0)
+        return ret_code;
+    */
+    // should I acquire the mutex here???
+    while (count[session_id] < len) {
+        if ((ret_code = pthread_cond_wait(&can_read[session_id], &mutex[session_id])) != 0) {
+            return ret_code;
+        }
+    }
+    _read_from_buffer_unsychronized(dest, len, pc_buffer[session_id], &consptr[session_id], &count[session_id]);
+    pthread_cond_signal(&can_write[session_id]);
+    /*ret_code = pthread_mutex_unlock(&mutex[session_id]);
+    */
+    return ret_code; 
+}
+
 void *worker(void *arg) {
     int *arg_int = (int *) arg;
-    int session_id = *arg_int;
+    int session_id = *arg_int, send_id, recv_id;
     free(arg_int);
     char opcode;
-    int ret_code;
-    size_t prodptr_offset;
+    int ret_code, ret_error;
     char pipe_name[FIFO_NAME_SIZE+1];
     if (session_id < 0 || session_id >= S)
         return NULL;
-    
+    int write_fd = -1;
     // there is an agreement that the receiver task will 
     // only send full messages: here we just know that we 
     // never receive partial ones. This simplifies the worker task
@@ -77,55 +100,37 @@ void *worker(void *arg) {
                 return NULL;
             }
         }
-        opcode = pc_buffer[prodptr];
-        prodptr_offset = 1; 
+        opcode = pc_buffer[session_id][consptr];
         if (opcode == TFS_OP_CODE_MOUNT) {
-            memcpy(pipe_name, \
-            if (read_all(read_fd, buffer, FIFO_NAME_SIZE) != 0) {
-                perror("Error reading fifo's name in mount");
-                return -1;
+            if ((ret_error = read_from_buffer(pipe_name, FIFO_NAME_SIZE, session_id)) != 0) {
+                fprintf(stderr, "Error reading from buffer in session %d: %s\n", session_id, strerror(ret_error));
+                return NULL;
             }
-            buffer[FIFO_NAME_SIZE] = '\0'; 
+            pipe_name[FIFO_NAME_SIZE] = '\0'; 
             if ((write_fd = open(buffer, O_WRONLY)) == -1) {
                 perror("Error opening client's fifo");
-                unlink(pipename);
-                close(read_fd);
-                return -1;
+                return NULL;
             }
 
+            send_id = session_id;
             if (tfs_init() == -1)
-                session_id = -1;
-            if (write_all(write_fd, &session_id, sizeof(int)) != 0) {
+                send_id = -1;
+            if (write_all(write_fd, &send_id, sizeof(int)) != 0) {
                 perror("Error writing to client's fifo");
-                unlink(pipename);
-                close(read_fd);
-                close(write_fd); // should close all of them
-                return -1;
+                close(write_fd); 
+                return NULL;
             }
-            
-            /* This is extra code that will be useful when there are checks for too many sessions
-            else if (close(write_fds[num_clients]) != 0) {
-                perror("Error closing extra client's fifo");
-                unlink(pipename);
-                close(read_fd);
-                close(write_fds[num_clients-1]); // should close all of them
-                return -1;
-            }*/
         }
         else if (opcode == TFS_OP_CODE_UNMOUNT) {
-            if (read_all(read_fd, &session_id, sizeof(session_id)) != 0) {
-                perror("Error reading session id in unmount");
-                unlink(pipename);
-                close(read_fd);
-                close(write_fd); // should close all of them
-                return -1;
+            if ((ret_error = read_from_buffer(&recv_id, sizeof(recv_id), session_id) != 0)) {
+                fprintf(stderr, "Error reading from buffer in session %d: %s\n", session_id, strerror(ret_error));
+                return NULL;
             }
             ret_code = 0; // we need to change this: right now unmount should always just return 0 as it does nothing apart
                           // from closing the write file descriptor: we need to check
             if (write_all(write_fd, &ret_code, sizeof(int)) != 0) {
                 perror("Error writing to client's fifo in unmount");
                 unlink(pipename);
-                close(read_fd);
                 close(write_fd); // should close all of them
                 return -1;
             }
@@ -137,6 +142,7 @@ void *worker(void *arg) {
             }
         }
         else if (opcode == TFS_OP_CODE_OPEN) {
+            read_from_buffer(pc_buffer[session_id], &consptr[session_id], s, pipe_name, size_t *counti)      
             if (read_all(read_fd, buffer, sizeof(session_id) + MAX_FILE_NAME + sizeof(flags)) != 0) {
                 perror("Error reading session id in unmount");
                 unlink(pipename);
