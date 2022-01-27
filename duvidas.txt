@@ -15,7 +15,7 @@ porque o mutex não foi destruído. Para além disso, devolvo -1 nas funções q
 
 6- Quando fazem shutdown o que é suposto acontecer na main thread?
 
-7- Devemos fazer o init quando fazem unmount depois do shutdown? Ou o init é só 1 vez antes de tudo?
+7- Devemos fazer o init quando fazem mount depois do shutdown? Ou o init é só 1 vez antes de tudo? Nota: de momento está só 1 vez antes de tudo
 
 8- Pus a producer consumer buffer a só sinalizar mensagens completas: a lógica era para não estar sempre a trancar e destrancar o mutex para ir ler cada variável: no entanto, como está
 tranca a tarefa toda enquanto a tarefa executa as coisas todas..
@@ -25,6 +25,12 @@ que ninguém vai fazer join?
 
 10- Devo ler o session_id dentro da thread ou posso só não o enviar e ver disso só na thread principal? Se tenho de enviar, devo verificar dentro da thread que está certo? Nota para mim: se sim,
 coloquei essas todas no recv_id é só comparar com o session_id
+
+11- O que é suposto acontecer quando fazem shutdown e depois mount outra vez? É suposto ser feito outro init ou devolver -1?
+
+12- No tfs_read e tfs_write devo usar malloc de tamanho len e depois dar free ou posso usar uma buffer na stack de tamanho grande tipo PIPE_BUF?
+
+13- No unmount e no shutdown eu devolvo erro se a minha tabela FREE/TAKEN de sessões estava livre na posição que devia estar taken: o que achas?
 
 *- A questão do MAX_FILE_NAME: posso incluir o common.h no state? Eu passei-o para o common porque tanto o cliente como o servidor precisam dele, no entanto o state também precisa. Vale a pena
 declarar outro .h na pasta common para essa variável?  (Nota para mim: incluí o common no state para funcionar por agora) R: ok
