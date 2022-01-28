@@ -18,7 +18,9 @@ porque o mutex não foi destruído. Para além disso, devolvo -1 nas funções q
 7- Devemos fazer o init quando fazem mount depois do shutdown? Ou o init é só 1 vez antes de tudo? Nota: de momento está só 1 vez antes de tudo
 
 8- Pus a producer consumer buffer a só sinalizar mensagens completas: a lógica era para não estar sempre a trancar e destrancar o mutex para ir ler cada variável: no entanto, como está
-tranca a tarefa toda enquanto a tarefa executa as coisas todas..
+tranca a tarefa toda enquanto a tarefa executa as coisas todas.. 
+8a- Também há 1 problema com tfs_read/write muito grandes (maiores que o tamanho da buffer): isto não deve acontecer no projeto, mas se fosse 1 fs com ficheiros maiores se estivessemos a fazer 
+1 tfs_write e a buffer produtor consumidor fosse menor que o nr de bytes que queriamos escrever ia ficar trancado para sempre...
 
 9- O que fazer quando falham dentro da thread? Imediatamente devolver NULL ou esperar pelo unmount para fazer close dos fd? Ou não fazer return NULL, para a thread continuar ativa, visto
 que ninguém vai fazer join?
