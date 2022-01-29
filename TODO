@@ -1,4 +1,3 @@
-1- Problema na leitura do pc_buffer: é preciso fazer 1 write pc_buffer
 2- Implement operations apart from tfs_mount on the server side: refactor code so that it calls a function for each operation
 3- Improve tfs_server.c: add checks that the session_id is active
 5- Note that right now we are ignoring the session_id and not serialising it: once we move to the multithreaded server, we need to serialise it in the main function
@@ -6,3 +5,8 @@
 7- Make sure we can't connect more than S sessions in the main thread
 8- Close read_fds in main thread at the end of the thread, or at unmount
 9- Notar que dos commits de 5 janeiro para 6 eu retirei algumas coisas em caso de erro dentro das threads (close read_fd e unlink pipename). Ver se isso faz sentido
+10- Guardar os pipenames do cliente utilizados, e verificar que ninguém utiliza o mesmo 
+11- Enviar 41 bytes no nome do ficheiro do server para o operations, com o 41ª a ser o \0
+12- Mutex a proteger o exit no shutdown
+13- Não usar VLA, usar buffers de tamanho PIPE_BUF
+14- Quando falham chamadas de sistema dentro das threads crashamos a thread ou o próprio programa: quanddo falham as cenas do tfs seguimos. Falar disto com o Baltasar

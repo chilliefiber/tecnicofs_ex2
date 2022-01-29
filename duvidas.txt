@@ -1,15 +1,13 @@
-1- Dentro do state há chamadas a strlen: portanto os nomes de ficheiros têm de ser strings e só podem ter 39 caracteres para lá do '\0': no entanto o mesmo não é verdade para os pipes
-
 2- No tfs_write estou no cliente a pôr tudo no mesmo write para ele poder ser atómico. No entanto isso tem o custo de alocar memória do tamanho da buffer que vamos escrever. Posso arriscar 
 não serem atómicos e não alocar memória do tamanho da buffer? Se for para alocar, deve ser na heap para o caso em que comecemos a ter de alocar muita memória (com os valores que devem ser testados não há problema). No write
-do servidor também tou com a cena de se devo alocar na heap ou na stack. 
-2a) Also, devo prevenir writes com len > PIPE_BUF?
+do servidor também tou com a cena de se devo alocar na heap ou na stack. R: alocar na stack estaticamente
+2a) Also, devo prevenir writes com len > PIPE_BUF? R:sim
 
 3- Alterei o operations para ter 1 variável global que indica se foi inicializado ou não, e para ter o mutex estático: assim se houver chamadas a open depois do destroy_after_all_closed o pthread_mutex_lock não dá erro
 porque o mutex não foi destruído. Para além disso, devolvo -1 nas funções que não são o init quando essa variável global indica que o fs está destruído. Essa variável global é estado partilhado e protegi todas as funções com o mutex
 (incluindo a init e a destroy)
 
-4- O buffer produtor consumidor pode parar a tarefa principal: há problema?
+4- O buffer produtor consumidor pode parar a tarefa principal: há problema? 
 
 5- O que é suposto acontecer quando há 1 erro numa tarefa trabalhadora?
 
@@ -33,6 +31,8 @@ coloquei essas todas no recv_id é só comparar com o session_id
 12- No tfs_read e tfs_write devo usar malloc de tamanho len e depois dar free ou posso usar uma buffer na stack de tamanho grande tipo PIPE_BUF?
 
 13- No unmount e no shutdown eu devolvo erro se a minha tabela FREE/TAKEN de sessões estava livre na posição que devia estar taken: o que achas?
+
+14- Devemos fazer tfs_init quando vem o primeiro mount ou logo no inicio? De momento ta na thread mas devia passar para o main
 
 *- A questão do MAX_FILE_NAME: posso incluir o common.h no state? Eu passei-o para o common porque tanto o cliente como o servidor precisam dele, no entanto o state também precisa. Vale a pena
 declarar outro .h na pasta common para essa variável?  (Nota para mim: incluí o common no state para funcionar por agora) R: ok
