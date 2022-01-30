@@ -14,6 +14,7 @@
 #define S (3)
 #define PC_BUF_SIZE (PIPE_BUF) // PIPE_BUF chosen because this way it can fit an entire message from the client
 
+pthread_mutex_t exit_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mutex[S] = {PTHREAD_MUTEX_INITIALIZER};
 pthread_mutex_t free_session_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t can_write[S] = {PTHREAD_COND_INITIALIZER};
@@ -36,7 +37,7 @@ int free_session_id(int session_id) {
         return -1;
     if (!taken_session[session_id])
         ret_code = -1;
-    taken_session[session_id] = 1;
+    taken_session[session_id] = 0;
     if (pthread_mutex_unlock(&free_session_mutex) != 0)
         return -1;
     return ret_code;
@@ -58,7 +59,6 @@ int get_session_id() { // an int because session_id are ints
     return -1;
 }
 
-    
 void _write_into_buffer_unsychronized(const void *src, size_t len, char *pc_buffer, size_t *prodptr, size_t *count) {
    *count += len;
     if ((*prodptr) + len <= PC_BUF_SIZE) {
@@ -144,7 +144,7 @@ void *worker(void *arg) {
     char opcode;
     int ret_code, ret_error;
     int flags, fhandle;
-    char pipe_name[FIFO_NAME_SIZE+1], file_name[MAX_FILE_NAME], rw_buffer[PIPE_BUF];
+    char pipe_name[FIFO_NAME_SIZE+1], file_name[MAX_FILE_NAME+1], rw_buffer[PIPE_BUF];
     if (session_id < 0 || session_id >= S)
         return NULL;
     int write_fd = -1;
@@ -213,6 +213,7 @@ void *worker(void *arg) {
                 perror("Error closing write file descriptor in unmount");
                 return NULL;
             }
+            // now the client
             printf("We're done unmounting\n");
         }
         else if (opcode == TFS_OP_CODE_OPEN) {
@@ -222,11 +223,16 @@ void *worker(void *arg) {
                 return NULL;
             }
             printf("We received the session_id from the client: %d\n", recv_id);
-            if ((ret_error = read_from_buffer(&file_name, sizeof(file_name), session_id)) != 0) {
+            if ((ret_error = read_from_buffer(&file_name, MAX_FILE_NAME, session_id)) != 0) {
                 fprintf(stderr, "Error reading file name from buffer in open session %d: %s\n", session_id, strerror(ret_error));
                 return NULL;
             }
-            file_name[MAX_FILE_NAME - 1] = '\0'; // we need to make sure the last character is a \0: inside the filesystem strlen is called with the filename
+            file_name[MAX_FILE_NAME] = '\0'; // we need to make sure the last character is a \0: inside the filesystem strlen is called with the filename
+                                             // the file's name inside the filesystem has MAX_FILE_NAME characters, including the '\0': however, the first
+                                             // character of all names is not stored, so we can send MAX_FILE_NAME+1 bytes (including \0), and this way
+                                             // we don't need to count on the client having sent a '\0', and we send all the bytes that can be used
+                                             // it is actually safe to send any amount of bytes as long as there is a
+                                             // '\0' due to the way the function add_dir_entry makes sure that the last character is a '\0'
             printf("We've read the filename it is :%s\n", file_name);
             if ((ret_error = read_from_buffer(&flags, sizeof(flags), session_id)) != 0) {
                 fprintf(stderr, "Error reading flags from buffer in open session %d: %s\n", session_id, strerror(ret_error));
@@ -340,12 +346,18 @@ void *worker(void *arg) {
                 return NULL;
             }
             ret_code = tfs_destroy_after_all_closed();
-            if (free_session_id(session_id) != 0)
-                ret_code = -1;
             if (write_all(write_fd, &ret_code, sizeof(ret_code)) != 0) {
                 perror("Error writing to client's fifo in shutdown");
                 close(write_fd); // should close all of them
                 return NULL;
+            }
+            // if the filesystem was destroyed successfully we exit the program
+            if (ret_code == 0) {
+                // it doesn't really matter if we get an error here: we are going to exit the program
+                // anyway
+                if (pthread_mutex_lock(&exit_mutex) != 0)
+                    exit(EXIT_FAILURE);
+                exit(EXIT_SUCCESS);
             }
         }
         else {
@@ -382,11 +394,13 @@ int main(int argc, char **argv) {
         unlink(pipename);
         return -1;
     }
-    
+ 
     if (tfs_init() == -1) {
         fprintf(stderr, "We couldn't initialize the file system\n");
+        return -1;
     }
- 
+
+    ssize_t read_ret_code; 
     int write_fd = -1, session_id, flags, fhandle, ret_code, *worker_id;
     size_t len; 
     char opcode;
@@ -406,11 +420,14 @@ int main(int argc, char **argv) {
     }
     
     while (1) {
-        if (read(read_fd, &opcode, 1) != 1) {
-            perror("Error reading opcode");
+        if ((read_ret_code = read(read_fd, &opcode, 1)) < 0) {
+            perror("Main thread: Error reading opcode");
             unlink(pipename);
             close(read_fd);
             return -1;
+        }
+        else if (read_ret_code == 0) {// this happens when there are no clients that have opened the file for writing
+            continue;
         }
         buffer[0] = opcode;
         printf("Main thread: opcode is %d\n", opcode);

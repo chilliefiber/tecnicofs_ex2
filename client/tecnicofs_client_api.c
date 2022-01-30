@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <limits.h>
 
 int write_fd; // fd of server's FIFO, open for writes only
 int read_fd; // fd of this client's FIFO, open for reads only
@@ -24,12 +25,11 @@ int tfs_mount(char const *client_pipe_path, char const *server_pipe_path) {
         unlink(client_pipe_path);
         return -1;
     }
-    // 1 for the opcode and one extra that won't be sent to fix 
-    // a warning
-    char msg[1 + FIFO_NAME_SIZE + 1];
+    char msg[PIPE_BUF];
+    if (1 + FIFO_NAME_SIZE > PIPE_BUF) // 1 + FIFO_NAME_SIZE is the actual size of the message we are going to send
+        return -1;
     msg[0] = TFS_OP_CODE_MOUNT;
     strncpy(msg+1, client_pipe_path, FIFO_NAME_SIZE); // No return values are reserved to indicate an error according to POSIX man page
-    msg[1+ FIFO_NAME_SIZE] = '\0'; 
    
     if (write_all(write_fd, msg, 1 + FIFO_NAME_SIZE) != 0) {
         close(write_fd);
@@ -54,8 +54,10 @@ int tfs_mount(char const *client_pipe_path, char const *server_pipe_path) {
 }
 
 int tfs_unmount() {
+    char buffer[PIPE_BUF];
     size_t len = 1 + sizeof(session_id);
-    char buffer[len];
+    if (len > PIPE_BUF)
+        return -1;
     buffer[0] = TFS_OP_CODE_UNMOUNT;
     memcpy(buffer + 1, &session_id, sizeof(session_id));
     if (write_all(write_fd, buffer, len) != 0) {
@@ -81,16 +83,15 @@ int tfs_unmount() {
 }
 
 int tfs_open(char const *name, int flags) {
-    char file_name[MAX_FILE_NAME + 1]; // same as name but guaranteed to have the correct 40 bytes to send
-    strncpy(file_name, name, MAX_FILE_NAME);
-    file_name[MAX_FILE_NAME] = '\0'; // prevent warnings, otherwise useless
+    char buffer[PIPE_BUF];
     size_t len = 1 + sizeof(session_id) + MAX_FILE_NAME + sizeof(flags);
-    char buffer[len];
+    if (len > PIPE_BUF)
+        return -1;
     buffer[0] = TFS_OP_CODE_OPEN;
     size_t offset = 1;
     memcpy(buffer + offset, &session_id, sizeof(session_id));
     offset += sizeof(session_id);
-    memcpy(buffer + offset, file_name, MAX_FILE_NAME);
+    strncpy(buffer + offset, name, MAX_FILE_NAME); 
     offset += MAX_FILE_NAME;
     memcpy(buffer + offset, &flags, sizeof(flags));
     if (write_all(write_fd, buffer, len) != 0) {
@@ -110,8 +111,10 @@ int tfs_open(char const *name, int flags) {
 }
 
 int tfs_close(int fhandle) {
+    char buffer[PIPE_BUF];
     size_t len = 1 + sizeof(session_id) + sizeof(fhandle);
-    char buffer[len];
+    if (len > PIPE_BUF)
+        return -1;
     buffer[0] = TFS_OP_CODE_CLOSE;
     size_t offset = 1;
     memcpy(buffer + offset, &session_id, sizeof(session_id));
@@ -134,8 +137,18 @@ int tfs_close(int fhandle) {
 }
 
 ssize_t tfs_write(int fhandle, void const *buffer, size_t len) {
-    size_t buf_len = 1 + sizeof(session_id) + sizeof(fhandle) + sizeof(len) + len; // Note: this is a VLA that might be big, should I malloc it?
-    char send_buffer[buf_len];
+    char send_buffer[PIPE_BUF];
+    size_t fixed_buf_len = 1 + sizeof(session_id) + sizeof(fhandle) + sizeof(len); 
+    if (fixed_buf_len > PIPE_BUF)
+        return -1;
+    size_t buf_len = fixed_buf_len + len;
+    // in this case there are enough bytes to send the constant size part of the message
+    // but not enough for all the bytes we want to write: we write only the bytes that fit
+    // inside the buffer that can be atomically written into a named pipe
+    if (buf_len > PIPE_BUF) {
+        len = PIPE_BUF - fixed_buf_len;
+        buf_len = PIPE_BUF;
+    }
     send_buffer[0] = TFS_OP_CODE_WRITE;
     size_t offset = 1;
     memcpy(send_buffer + offset, &session_id, sizeof(session_id));
@@ -163,8 +176,10 @@ ssize_t tfs_write(int fhandle, void const *buffer, size_t len) {
 }
 
 ssize_t tfs_read(int fhandle, void *buffer, size_t len) {
+    char send_buffer[PIPE_BUF];
     size_t buf_len = 1 + sizeof(session_id) + sizeof(fhandle) + sizeof(len); 
-    char send_buffer[buf_len];
+    if (buf_len > PIPE_BUF)
+        return -1;
     send_buffer[0] = TFS_OP_CODE_READ;
     size_t offset = 1;
     memcpy(send_buffer + offset, &session_id, sizeof(session_id));
@@ -199,8 +214,10 @@ ssize_t tfs_read(int fhandle, void *buffer, size_t len) {
 }
 
 int tfs_shutdown_after_all_closed() {
+    char buffer[PIPE_BUF];      
     size_t len = 1 + sizeof(session_id);
-    char buffer[len];
+    if (len > PIPE_BUF)
+        return -1;
     buffer[0] = TFS_OP_CODE_SHUTDOWN_AFTER_ALL_CLOSED;
     size_t offset = 1;
     memcpy(buffer + offset, &session_id, sizeof(session_id));

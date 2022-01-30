@@ -32,7 +32,11 @@ coloquei essas todas no recv_id é só comparar com o session_id
 
 13- No unmount e no shutdown eu devolvo erro se a minha tabela FREE/TAKEN de sessões estava livre na posição que devia estar taken: o que achas?
 
-14- Devemos fazer tfs_init quando vem o primeiro mount ou logo no inicio? De momento ta na thread mas devia passar para o main
+14- Devemos fazer tfs_init quando vem o primeiro mount ou logo no inicio? Eu faço logo no inicio 
+
+15- Devo declarar todas as variaveis de seguida?
+
+16- as vezes os testes em paralelo chegam ao successful test e depois pimba core dumped. isto nao é facil de replicar e nao percebo porque possa acontecer
 
 *- A questão do MAX_FILE_NAME: posso incluir o common.h no state? Eu passei-o para o common porque tanto o cliente como o servidor precisam dele, no entanto o state também precisa. Vale a pena
 declarar outro .h na pasta common para essa variável?  (Nota para mim: incluí o common no state para funcionar por agora) R: ok
