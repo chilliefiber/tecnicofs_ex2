@@ -1,19 +1,7 @@
-2- No tfs_write estou no cliente a pôr tudo no mesmo write para ele poder ser atómico. No entanto isso tem o custo de alocar memória do tamanho da buffer que vamos escrever. Posso arriscar 
-não serem atómicos e não alocar memória do tamanho da buffer? Se for para alocar, deve ser na heap para o caso em que comecemos a ter de alocar muita memória (com os valores que devem ser testados não há problema). No write
-do servidor também tou com a cena de se devo alocar na heap ou na stack. R: alocar na stack estaticamente
-2a) Also, devo prevenir writes com len > PIPE_BUF? R:sim
-
-3- Alterei o operations para ter 1 variável global que indica se foi inicializado ou não, e para ter o mutex estático: assim se houver chamadas a open depois do destroy_after_all_closed o pthread_mutex_lock não dá erro
-porque o mutex não foi destruído. Para além disso, devolvo -1 nas funções que não são o init quando essa variável global indica que o fs está destruído. Essa variável global é estado partilhado e protegi todas as funções com o mutex
-(incluindo a init e a destroy)
 
 4- O buffer produtor consumidor pode parar a tarefa principal: há problema? 
 
 5- O que é suposto acontecer quando há 1 erro numa tarefa trabalhadora?
-
-6- Quando fazem shutdown o que é suposto acontecer na main thread?
-
-7- Devemos fazer o init quando fazem mount depois do shutdown? Ou o init é só 1 vez antes de tudo? Nota: de momento está só 1 vez antes de tudo
 
 8- Pus a producer consumer buffer a só sinalizar mensagens completas: a lógica era para não estar sempre a trancar e destrancar o mutex para ir ler cada variável: no entanto, como está
 tranca a tarefa toda enquanto a tarefa executa as coisas todas.. 
@@ -26,8 +14,6 @@ que ninguém vai fazer join?
 10- Devo ler o session_id dentro da thread ou posso só não o enviar e ver disso só na thread principal? Se tenho de enviar, devo verificar dentro da thread que está certo? Nota para mim: se sim,
 coloquei essas todas no recv_id é só comparar com o session_id
 
-11- O que é suposto acontecer quando fazem shutdown e depois mount outra vez? É suposto ser feito outro init ou devolver -1?
-
 12- No tfs_read e tfs_write devo usar malloc de tamanho len e depois dar free ou posso usar uma buffer na stack de tamanho grande tipo PIPE_BUF?
 
 13- No unmount e no shutdown eu devolvo erro se a minha tabela FREE/TAKEN de sessões estava livre na posição que devia estar taken: o que achas?
@@ -38,5 +24,25 @@ coloquei essas todas no recv_id é só comparar com o session_id
 
 16- as vezes os testes em paralelo chegam ao successful test e depois pimba core dumped. isto nao é facil de replicar e nao percebo porque possa acontecer
 
+17- EAGAIN no write (ver manpage do write(3))
+
+18- reads de valor 0 está meio ambiguo: parece-me que não faz sentido continuar a ler
+
+19- Devo verificar se a sessão está ativa no main? No caso de não estar, devo devolver -1 ao cliente ou posso só ignorar o pedido?
+
+20- Como organizar o código?
+
+Respondidas:
+
+11- O que é suposto acontecer quando fazem shutdown e depois mount outra vez? É suposto ser feito outro init ou devolver -1? R: o shutdown apaga o programa
+6- Quando fazem shutdown o que é suposto acontecer na main thread? R: quando é feito shutdown é chamar o exit
+2- No tfs_write estou no cliente a pôr tudo no mesmo write para ele poder ser atómico. No entanto isso tem o custo de alocar memória do tamanho da buffer que vamos escrever. Posso arriscar 
+não serem atómicos e não alocar memória do tamanho da buffer? Se for para alocar, deve ser na heap para o caso em que comecemos a ter de alocar muita memória (com os valores que devem ser testados não há problema). No write
+do servidor também tou com a cena de se devo alocar na heap ou na stack. R: alocar na stack estaticamente
+2a) Also, devo prevenir writes com len > PIPE_BUF? R:sim
+
+3- Alterei o operations para ter 1 variável global que indica se foi inicializado ou não, e para ter o mutex estático: assim se houver chamadas a open depois do destroy_after_all_closed o pthread_mutex_lock não dá erro
+porque o mutex não foi destruído. Para além disso, devolvo -1 nas funções que não são o init quando essa variável global indica que o fs está destruído. Essa variável global é estado partilhado e protegi todas as funções com o mutex
+(incluindo a init e a destroy) R: ok
 *- A questão do MAX_FILE_NAME: posso incluir o common.h no state? Eu passei-o para o common porque tanto o cliente como o servidor precisam dele, no entanto o state também precisa. Vale a pena
 declarar outro .h na pasta common para essa variável?  (Nota para mim: incluí o common no state para funcionar por agora) R: ok

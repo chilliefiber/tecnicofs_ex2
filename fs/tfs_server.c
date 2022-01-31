@@ -11,7 +11,7 @@
 #include <stdbool.h>
 #include <pthread.h>
 
-#define S (3)
+#define S (20)
 #define PC_BUF_SIZE (PIPE_BUF) // PIPE_BUF chosen because this way it can fit an entire message from the client
 
 pthread_mutex_t exit_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -27,6 +27,18 @@ char taken_session[S] = {0};
 
 bool valid_session_id(int session_id) {
     return (session_id > -1 && session_id < S);
+}
+
+bool active_session_id(int session_id) {
+    bool active = false;
+    if (valid_session_id(session_id)) {
+        if (pthread_mutex_lock(&free_session_mutex) != 0)
+            return active;
+        active = taken_session[session_id];
+        if (pthread_mutex_unlock(&free_session_mutex) != 0)
+            return false;
+    }
+    return active;
 }
 
 int free_session_id(int session_id) {
@@ -100,6 +112,7 @@ int read_from_buffer(void *dest, size_t len, int session_id) {
     if ((ret_code = pthread_mutex_lock(&mutex[session_id])) != 0)
         return ret_code;
     */
+    printf("Read into buffer1\n");
     // should I acquire the mutex here???
     while (counts[session_id] < len) { // note that if len > PC_BUF_SIZE this is a deadlock
         if ((ret_code = pthread_cond_wait(&can_read[session_id], &mutex[session_id])) != 0) {
@@ -120,6 +133,7 @@ int write_into_buffer(const void *src, size_t len, int session_id) {
     // here it makes a lot of sense to lock the mutex: this function
     // will be called by the main thread and will probably write the whole message into
     // the buffer
+    printf("Write into buffer1\n");
     if ((ret_code = pthread_mutex_lock(&mutex[session_id])) != 0)
         return ret_code;
 
@@ -167,7 +181,7 @@ void *worker(void *arg) {
                 return NULL;
         }  
         if (opcode == TFS_OP_CODE_MOUNT) {
-            printf("Mounting your ass\n");
+            printf("Mounting in thread\n");
             if ((ret_error = read_from_buffer(pipe_name, FIFO_NAME_SIZE, session_id)) != 0) {
                 fprintf(stderr, "Error reading pipe name from buffer in mount session %d: %s\n", session_id, strerror(ret_error));
                 return NULL;
@@ -305,13 +319,13 @@ void *worker(void *arg) {
             printf("We wrote the ret_code into the client's pipe");
         }
         else if (opcode == TFS_OP_CODE_READ) {
-            printf("We about to read in this motherfucker\n");
+            printf("We about to read \n");
             if ((ret_error = read_from_buffer(&recv_id, sizeof(recv_id), session_id)) != 0) {
                 fprintf(stderr, "Error reading session_id from buffer in read session %d: %s\n", session_id, strerror(ret_error));
                 close(write_fd);
                 return NULL;
             }
-            printf("We read from the pc buffer the mofucking session_id: %d\n", recv_id);
+            printf("We read from the pc buffer the session_id: %d\n", recv_id);
             if ((ret_error = read_from_buffer(&fhandle, sizeof(fhandle), session_id)) != 0) {
                 fprintf(stderr, "Error reading fhandle from buffer in read session %d: %s\n", session_id, strerror(ret_error));
                 close(write_fd);
@@ -331,7 +345,7 @@ void *worker(void *arg) {
                 close(write_fd); // should close all of them
                 return NULL;
             }
-            printf("We wrote into the client's pipe the mofucking ret_code\n");
+            printf("We wrote into the client's pipe the ret_code\n");
             if (ret_code > 0 && write_all(write_fd, rw_buffer, (size_t) ret_code) != 0) {
                 perror("Error writing bytes to client's fifo in read");
                 close(write_fd); // should close all of them
@@ -388,7 +402,7 @@ int main(int argc, char **argv) {
         return -1;
     }
    
-    int read_fd = open(pipename, O_RDONLY);
+    int aux_read_fd, read_fd = open(pipename, O_RDONLY);
     if (read_fd == -1) {
         perror("Error opening server's FIFO for reading");
         unlink(pipename);
@@ -420,15 +434,29 @@ int main(int argc, char **argv) {
     }
     
     while (1) {
-        if ((read_ret_code = read(read_fd, &opcode, 1)) < 0) {
+        if ((read_ret_code = read(read_fd, &opcode, 1)) < 0 && errno != EINTR) {
             perror("Main thread: Error reading opcode");
+            write(1, "read_error", strlen("read_error"));
             unlink(pipename);
             close(read_fd);
             return -1;
         }
-        else if (read_ret_code == 0) {// this happens when there are no clients that have opened the file for writing
+        else if (errno == EINTR)
             continue;
+        else if (read_ret_code == 0) {// this happens when there are no clients that have opened the file for writing (they all closed it already)
+            aux_read_fd = open(pipename, O_RDONLY); // wait here for someone to open
+            if (aux_read_fd == -1) {
+                perror("Error opening server's FIFO for reading");
+                unlink(pipename);
+                return -1;
+            }
+            if (close(aux_read_fd) != 0) {
+                perror("Error closing auxiliary read file descriptor");
+                unlink(pipename);
+                return -1;
+            }
         }
+        
         buffer[0] = opcode;
         printf("Main thread: opcode is %d\n", opcode);
         if (opcode == TFS_OP_CODE_MOUNT) {
@@ -473,9 +501,9 @@ int main(int argc, char **argv) {
                 close(write_fd); // should close all of them
                 return -1;
             }
-            ret_code = 0; // we need to change this: right now unmount should always just return 0 as it does nothing apart
-                          // from closing the write file descriptor: we need to check
             memcpy(&session_id, buffer + 1, sizeof(session_id));
+            if (!active_session_id(session_id))
+                continue;
             if ((ret_code = write_into_buffer(buffer, sizeof(session_id)+1, session_id)) != 0) {
                 fprintf(stderr, "Error writing to producer consumer buffer in session %d unmount: %s\n", session_id, strerror(ret_code));
                 unlink(pipename);
