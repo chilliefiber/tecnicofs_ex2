@@ -13,6 +13,18 @@
 
 #define S (20)
 #define PC_BUF_SIZE (PIPE_BUF) // PIPE_BUF chosen because this way it can fit an entire message from the client
+typedef struct command {
+    char opcode;
+    int session_id;
+    int fhandle;
+    int flags;
+    size_t len;
+    char name[MAX_FILE_NAME + 1]; 
+    char buffer[PIPE_BUF]; // this buffer could be dinamically allocated as well, which would make more sense in an environment with more stern memory
+                           // constraints. I chose not to do that because it was extra trouble for little reward. I could have also only used one buffer
+                           // but I kept it like this to logically separate the buffer for the filename andd the buffer for the reads/writes: again,
+                           // we have plenty of memory
+} command;
 
 pthread_mutex_t exit_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mutex[S] = {PTHREAD_MUTEX_INITIALIZER};
@@ -24,6 +36,326 @@ size_t consptrs[S] = {0};
 size_t counts[S] = {0};
 char pc_buffers[S][PIPE_BUF]; 
 char taken_session[S] = {0};
+
+
+int main(int argc, char **argv) {
+
+    if (argc < 2) {
+        printf("Please specify the pathname of the server's pipe.\n");
+        return 1;
+    }
+
+    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+        perror("Error ignoring sigpipe");
+        return -1;
+    }
+
+    char *pipename = argv[1];
+    printf("Starting TecnicoFS server with pipe called %s\n", pipename);
+
+    // create server's fifo
+    if (unlink(pipename) != 0 && errno != ENOENT) {
+        perror("Error unlinking");
+        return -1;
+    } 
+    if (mkfifo(pipename, 0777) != 0) {
+        perror("Error creating named pipe");
+        return -1;
+    }
+   
+    int aux_read_fd, read_fd = open(pipename, O_RDONLY);
+    if (read_fd == -1) {
+        perror("Error opening server's FIFO for reading");
+        unlink(pipename);
+        return -1;
+    }
+ 
+    if (tfs_init() == -1) {
+        fprintf(stderr, "We couldn't initialize the file system\n");
+        return -1;
+    }
+
+    ssize_t read_ret_code; 
+    int write_fd = -1, session_id, flags, fhandle, ret_code, *worker_id;
+    size_t len; 
+    char opcode;
+    char buffer[PIPE_BUF]; // writes should be no bigger than PIPE_BUF, to make sure they are atomic in the FIFO. Actually it doesn't matter here in the server, but do it in the client
+    pthread_t workers[S];
+    for (int i = 0; i < S; i++) {
+        worker_id = malloc(sizeof(int));
+        *worker_id = i;
+        if ((ret_code = pthread_create(&workers[i], NULL, worker, (void *) worker_id)) != 0) {
+            fprintf(stderr, "Error creating thread: %s\n", strerror(ret_code));
+            return -1;
+        }
+        if ((ret_code = pthread_detach(workers[i])) != 0) {
+            fprintf(stderr, "Error detaching thread: %s\n", strerror(ret_code));
+            return -1;
+        }
+    }
+    
+    while (1) {
+        if ((read_ret_code = read(read_fd, &opcode, 1)) < 0 && errno != EINTR) {
+            perror("Main thread: Error reading opcode");
+            write(1, "read_error", strlen("read_error"));
+            unlink(pipename);
+            close(read_fd);
+            return -1;
+        }
+        else if (errno == EINTR)
+            continue;
+        else if (read_ret_code == 0) {// this happens when there are no clients that have opened the file for writing (they all closed it already)
+            aux_read_fd = open(pipename, O_RDONLY); // wait here for someone to open
+            if (aux_read_fd == -1) {
+                perror("Error opening server's FIFO for reading");
+                unlink(pipename);
+                return -1;
+            }
+            if (close(aux_read_fd) != 0) {
+                perror("Error closing auxiliary read file descriptor");
+                unlink(pipename);
+                return -1;
+            }
+        }
+        
+        buffer[0] = opcode;
+        printf("Main thread: opcode is %d\n", opcode);
+        if (opcode == TFS_OP_CODE_MOUNT) {
+            if (read_all(read_fd, buffer+1, FIFO_NAME_SIZE) != 0) {
+                perror("Error reading fifo's name in mount");
+                return -1;
+            }
+            buffer[FIFO_NAME_SIZE+1] = '\0'; 
+            session_id = get_session_id();
+            if (session_id == -1) {
+                printf("Main thread will reject a client\n");
+                if ((write_fd = open(buffer+1, O_WRONLY)) == -1) {
+                    perror("Error opening client's fifo");
+                    unlink(pipename);
+                    close(read_fd);
+                    return -1;
+                }
+                if (write_all(write_fd, &session_id, sizeof(int)) != 0) {
+                    perror("Error writing to client's fifo");
+                    unlink(pipename);
+                    close(read_fd);
+                    close(write_fd); //should close all of them
+                    return -1;
+                }
+                printf("main there rejected a client\n");
+            }
+            else {
+                if ((ret_code = write_into_buffer(buffer, FIFO_NAME_SIZE+1, session_id)) != 0) {
+                    fprintf(stderr, "Error writing to producer consumer buffer in session %d mount: %s\n", session_id, strerror(ret_code));
+                    unlink(pipename);
+                    close(read_fd);
+                    close(write_fd); //should close all of them
+                    return -1;
+                }
+            }
+        }
+        else if (opcode == TFS_OP_CODE_UNMOUNT) {
+            if (read_all(read_fd, buffer + 1, sizeof(session_id)) != 0) {
+                perror("Error reading session id in unmount");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+            memcpy(&session_id, buffer + 1, sizeof(session_id));
+            if (!active_session_id(session_id))
+                continue;
+            if ((ret_code = write_into_buffer(buffer, sizeof(session_id)+1, session_id)) != 0) {
+                fprintf(stderr, "Error writing to producer consumer buffer in session %d unmount: %s\n", session_id, strerror(ret_code));
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); //should close all of them
+                return -1;
+            }
+        }
+        else if (opcode == TFS_OP_CODE_OPEN) {
+            printf("main thread entered open\n");
+            if (read_all(read_fd, buffer + 1, sizeof(session_id) + MAX_FILE_NAME + sizeof(flags)) != 0) {
+                perror("Error reading session id in open");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+            printf("We're going to write into the buffer in open\n");
+            memcpy(&session_id, buffer + 1, sizeof(session_id));
+            if ((ret_code = write_into_buffer(buffer, sizeof(session_id) + MAX_FILE_NAME + sizeof(flags) + 1, session_id)) != 0) {
+                fprintf(stderr, "Error writing to producer consumer buffer in session %d open: %s\n", session_id, strerror(ret_code));
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); //should close all of them
+                return -1;
+            }
+        }
+        else if (opcode == TFS_OP_CODE_CLOSE) {
+            if (read_all(read_fd, buffer + 1, sizeof(session_id) + sizeof(fhandle)) != 0) {
+                perror("Error reading session id and fhandle in close");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+            memcpy(&session_id, buffer + 1, sizeof(session_id));
+            if ((ret_code = write_into_buffer(buffer, sizeof(session_id) + sizeof(fhandle) + 1, session_id)) != 0) {
+                fprintf(stderr, "Error writing to producer consumer buffer in session %d close: %s\n", session_id, strerror(ret_code));
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); //should close all of them
+                return -1;
+            }
+        }
+        else if (opcode == TFS_OP_CODE_WRITE) {
+            if (read_all(read_fd, buffer + 1, sizeof(session_id) + sizeof(fhandle) + sizeof(len)) != 0) {
+                perror("Error reading session id in write");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+            memcpy(&len, buffer + 1 + sizeof(session_id) + sizeof(fhandle), sizeof(len));
+            if (len > 0 && read_all(read_fd, buffer + 1 + sizeof(session_id) + sizeof(fhandle) + sizeof(len), len) != 0) {
+                perror("Error reading bytes to write in write");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+            memcpy(&session_id, buffer + 1, sizeof(session_id));
+            if ((ret_code = write_into_buffer(buffer, sizeof(session_id) + sizeof(fhandle) + sizeof(len) + len + 1, session_id)) != 0) {
+                fprintf(stderr, "Error writing to producer consumer buffer in session %d write: %s\n", session_id, strerror(ret_code));
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); //should close all of them
+                return -1;
+            }
+        }
+        else if (opcode == TFS_OP_CODE_READ) {
+            if (read_all(read_fd, buffer + 1, sizeof(session_id) + sizeof(fhandle) + sizeof(len)) != 0) {
+                perror("Error reading session id in read");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+            memcpy(&session_id, buffer + 1, sizeof(session_id));
+            if ((ret_code = write_into_buffer(buffer, sizeof(session_id) + sizeof(fhandle) + sizeof(len) + 1, session_id)) != 0) {
+                fprintf(stderr, "Error writing to producer consumer buffer in session %d read: %s\n", session_id, strerror(ret_code));
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); //should close all of them
+                return -1;
+            }
+        }
+        else if (opcode == TFS_OP_CODE_SHUTDOWN_AFTER_ALL_CLOSED) {
+            if (read_all(read_fd, buffer + 1, sizeof(session_id)) != 0) {
+                perror("Error reading session id in shutdown after all closed");
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); // should close all of them
+                return -1;
+            }
+            memcpy(&session_id, buffer + 1, sizeof(session_id));
+            if ((ret_code = write_into_buffer(buffer, sizeof(session_id)+1, session_id)) != 0) {
+                fprintf(stderr, "Error writing to producer consumer buffer in session %d unmount: %s\n", session_id, strerror(ret_code));
+                unlink(pipename);
+                close(read_fd);
+                close(write_fd); //should close all of them
+                return -1;
+            }
+        }
+        else {
+            fprintf(stderr, "Received incorrect opcode\n");
+            return -1; 
+        }
+    }
+ 
+    return 0;
+}
+
+parse_command(int read_fd, char opcode) {
+    command *cmd = malloc(sizeof(command)); // I allocate it in this function for code reuse: every function would have to call malloc 
+                                            // and check for errors, and this way it's all done in one place. The only tradeoff is
+                                            // I still malloc for invalid opcodes
+    int ret_code;
+    if (cmd == NULL) {
+        fprintf(stderr, "Error mallocing command\n");        
+        if (ret_code = pthread_mutex_lock(&exit_mutex) != 0) {
+            fprintf(stderr, "Error locking exit_mutex in parse_command: %s\n", strerror(ret_code));
+        }
+        exit(EXIT_FAILURE); // I exit anyway to make sure the program crashes: not sure if I should, since exit is not MT safe. However, in my man page (Linux, not POSIX)
+        // none of the errors are likely to happen: EINVAL because the mutex is always properly initialized (with the macro), and EDEADLOCK because this is not recursive
+    }
+    switch (opcode) {
+        case TFS_OP_CODE_MOUNT:
+            parse_mount_to_worker(cmd);
+            return;
+        case TFS_OP_CODE_UNMOUNT:
+            deliver_unmount_to_worker(cmd);
+            return;
+        case TFS_OP_CODE_OPEN:
+            deliver_open_to_worker(cmd);
+            return;
+        case TFS_OP_CODE_CLOSE:
+            deliver_close_to_worker(cmd);
+            return;
+        case TFS_OP_CODE_WRITE:
+            deliver_write_to_worker(cmd);
+            return;
+        case TFS_OP_CODE_READ:
+            deliver_read_to_worker(cmd);
+            return;
+        case TFS_OP_CODE_SHUTDOWN_AFTER_ALL_CLOSED:
+            deliver_shutdown_to_worker(cmd);
+            return;
+        default:
+            free(cmd);
+            fprintf(stderr, "Received invalid opcode with value: %d\n", opcode);
+            return;
+            // mandar merda para o stderr
+    }
+}
+
+parse_mount(int read_fd) {
+    int write_fd;
+    char buffer[PIPE_BUF]; // could also be PIPE_BUF-1 because we already read the opcode
+    if (read_all(read_fd, buffer, FIFO_NAME_SIZE) != 0) {
+        perror("Error reading fifo's name in mount"); // we continue execution: this might be problematic for some errors in read... I figure they will then appear 
+                                                      // when we read the next opcode
+        return;
+    }
+    buffer[FIFO_NAME_SIZE] = '\0'; 
+    session_id = get_session_id();
+    // I always call perror: note that there is a chance for example in write_all
+    // that errno was not updated. This is true in lots of places around the code, but I figure that's ok
+    if (session_id == -1) {
+        fprintf(stderr, "Main thread will reject a client\n");
+        if ((write_fd = open(buffer, O_WRONLY)) == -1) {
+            perror("Error opening client's fifo in mount");
+            return; 
+        }
+        if (write_all(write_fd, &session_id, sizeof(int)) != 0) {
+            perror("Error writing to client's fifo");
+            if (close(write_fd) != 0)
+                perror("Error closing fd for rejected client in mount");
+        }
+        fprintf(stderr, "main thread rejected a client\n");
+    }
+    else {
+        deliver_mount_to_worker
+        if ((ret_code = write_into_buffer(buffer, FIFO_NAME_SIZE+1, session_id)) != 0) {
+            fprintf(stderr, "Error writing to producer consumer buffer in session %d mount: %s\n", session_id, strerror(ret_code));
+            unlink(pipename);
+            close(read_fd);
+            close(write_fd); //should close all of them
+            return -1;
+        }
+    }
+}
 
 bool valid_session_id(int session_id) {
     return (session_id > -1 && session_id < S);
@@ -380,238 +712,4 @@ void *worker(void *arg) {
         }
     }
     return NULL; // will never get here
-}
-
-int main(int argc, char **argv) {
-
-    if (argc < 2) {
-        printf("Please specify the pathname of the server's pipe.\n");
-        return 1;
-    }
-
-    char *pipename = argv[1];
-    printf("Starting TecnicoFS server with pipe called %s\n", pipename);
-
-    // create server's fifo
-    if (unlink(pipename) != 0 && errno != ENOENT) {
-        perror("Error unlinking");
-        return -1;
-    } 
-    if (mkfifo(pipename, 0777) != 0) {
-        perror("Error creating named pipe");
-        return -1;
-    }
-   
-    int aux_read_fd, read_fd = open(pipename, O_RDONLY);
-    if (read_fd == -1) {
-        perror("Error opening server's FIFO for reading");
-        unlink(pipename);
-        return -1;
-    }
- 
-    if (tfs_init() == -1) {
-        fprintf(stderr, "We couldn't initialize the file system\n");
-        return -1;
-    }
-
-    ssize_t read_ret_code; 
-    int write_fd = -1, session_id, flags, fhandle, ret_code, *worker_id;
-    size_t len; 
-    char opcode;
-    char buffer[PIPE_BUF]; // writes should be no bigger than PIPE_BUF, to make sure they are atomic in the FIFO. Actually it doesn't matter here in the server, but do it in the client
-    pthread_t workers[S];
-    for (int i = 0; i < S; i++) {
-        worker_id = malloc(sizeof(int));
-        *worker_id = i;
-        if ((ret_code = pthread_create(&workers[i], NULL, worker, (void *) worker_id)) != 0) {
-            fprintf(stderr, "Error creating thread: %s\n", strerror(ret_code));
-            return -1;
-        }
-        if ((ret_code = pthread_detach(workers[i])) != 0) {
-            fprintf(stderr, "Error detaching thread: %s\n", strerror(ret_code));
-            return -1;
-        }
-    }
-    
-    while (1) {
-        if ((read_ret_code = read(read_fd, &opcode, 1)) < 0 && errno != EINTR) {
-            perror("Main thread: Error reading opcode");
-            write(1, "read_error", strlen("read_error"));
-            unlink(pipename);
-            close(read_fd);
-            return -1;
-        }
-        else if (errno == EINTR)
-            continue;
-        else if (read_ret_code == 0) {// this happens when there are no clients that have opened the file for writing (they all closed it already)
-            aux_read_fd = open(pipename, O_RDONLY); // wait here for someone to open
-            if (aux_read_fd == -1) {
-                perror("Error opening server's FIFO for reading");
-                unlink(pipename);
-                return -1;
-            }
-            if (close(aux_read_fd) != 0) {
-                perror("Error closing auxiliary read file descriptor");
-                unlink(pipename);
-                return -1;
-            }
-        }
-        
-        buffer[0] = opcode;
-        printf("Main thread: opcode is %d\n", opcode);
-        if (opcode == TFS_OP_CODE_MOUNT) {
-            if (read_all(read_fd, buffer+1, FIFO_NAME_SIZE) != 0) {
-                perror("Error reading fifo's name in mount");
-                return -1;
-            }
-            buffer[FIFO_NAME_SIZE+1] = '\0'; 
-            session_id = get_session_id();
-            if (session_id == -1) {
-                printf("Main thread will reject a client\n");
-                if ((write_fd = open(buffer+1, O_WRONLY)) == -1) {
-                    perror("Error opening client's fifo");
-                    unlink(pipename);
-                    close(read_fd);
-                    return -1;
-                }
-                if (write_all(write_fd, &session_id, sizeof(int)) != 0) {
-                    perror("Error writing to client's fifo");
-                    unlink(pipename);
-                    close(read_fd);
-                    close(write_fd); //should close all of them
-                    return -1;
-                }
-                printf("main there rejected a client\n");
-            }
-            else {
-                if ((ret_code = write_into_buffer(buffer, FIFO_NAME_SIZE+1, session_id)) != 0) {
-                    fprintf(stderr, "Error writing to producer consumer buffer in session %d mount: %s\n", session_id, strerror(ret_code));
-                    unlink(pipename);
-                    close(read_fd);
-                    close(write_fd); //should close all of them
-                    return -1;
-                }
-            }
-        }
-        else if (opcode == TFS_OP_CODE_UNMOUNT) {
-            if (read_all(read_fd, buffer + 1, sizeof(session_id)) != 0) {
-                perror("Error reading session id in unmount");
-                unlink(pipename);
-                close(read_fd);
-                close(write_fd); // should close all of them
-                return -1;
-            }
-            memcpy(&session_id, buffer + 1, sizeof(session_id));
-            if (!active_session_id(session_id))
-                continue;
-            if ((ret_code = write_into_buffer(buffer, sizeof(session_id)+1, session_id)) != 0) {
-                fprintf(stderr, "Error writing to producer consumer buffer in session %d unmount: %s\n", session_id, strerror(ret_code));
-                unlink(pipename);
-                close(read_fd);
-                close(write_fd); //should close all of them
-                return -1;
-            }
-        }
-        else if (opcode == TFS_OP_CODE_OPEN) {
-            printf("main thread entered open\n");
-            if (read_all(read_fd, buffer + 1, sizeof(session_id) + MAX_FILE_NAME + sizeof(flags)) != 0) {
-                perror("Error reading session id in open");
-                unlink(pipename);
-                close(read_fd);
-                close(write_fd); // should close all of them
-                return -1;
-            }
-            printf("We're going to write into the buffer in open\n");
-            memcpy(&session_id, buffer + 1, sizeof(session_id));
-            if ((ret_code = write_into_buffer(buffer, sizeof(session_id) + MAX_FILE_NAME + sizeof(flags) + 1, session_id)) != 0) {
-                fprintf(stderr, "Error writing to producer consumer buffer in session %d open: %s\n", session_id, strerror(ret_code));
-                unlink(pipename);
-                close(read_fd);
-                close(write_fd); //should close all of them
-                return -1;
-            }
-        }
-        else if (opcode == TFS_OP_CODE_CLOSE) {
-            if (read_all(read_fd, buffer + 1, sizeof(session_id) + sizeof(fhandle)) != 0) {
-                perror("Error reading session id and fhandle in close");
-                unlink(pipename);
-                close(read_fd);
-                close(write_fd); // should close all of them
-                return -1;
-            }
-            memcpy(&session_id, buffer + 1, sizeof(session_id));
-            if ((ret_code = write_into_buffer(buffer, sizeof(session_id) + sizeof(fhandle) + 1, session_id)) != 0) {
-                fprintf(stderr, "Error writing to producer consumer buffer in session %d close: %s\n", session_id, strerror(ret_code));
-                unlink(pipename);
-                close(read_fd);
-                close(write_fd); //should close all of them
-                return -1;
-            }
-        }
-        else if (opcode == TFS_OP_CODE_WRITE) {
-            if (read_all(read_fd, buffer + 1, sizeof(session_id) + sizeof(fhandle) + sizeof(len)) != 0) {
-                perror("Error reading session id in write");
-                unlink(pipename);
-                close(read_fd);
-                close(write_fd); // should close all of them
-                return -1;
-            }
-            memcpy(&len, buffer + 1 + sizeof(session_id) + sizeof(fhandle), sizeof(len));
-            if (len > 0 && read_all(read_fd, buffer + 1 + sizeof(session_id) + sizeof(fhandle) + sizeof(len), len) != 0) {
-                perror("Error reading bytes to write in write");
-                unlink(pipename);
-                close(read_fd);
-                close(write_fd); // should close all of them
-                return -1;
-            }
-            memcpy(&session_id, buffer + 1, sizeof(session_id));
-            if ((ret_code = write_into_buffer(buffer, sizeof(session_id) + sizeof(fhandle) + sizeof(len) + len + 1, session_id)) != 0) {
-                fprintf(stderr, "Error writing to producer consumer buffer in session %d write: %s\n", session_id, strerror(ret_code));
-                unlink(pipename);
-                close(read_fd);
-                close(write_fd); //should close all of them
-                return -1;
-            }
-        }
-        else if (opcode == TFS_OP_CODE_READ) {
-            if (read_all(read_fd, buffer + 1, sizeof(session_id) + sizeof(fhandle) + sizeof(len)) != 0) {
-                perror("Error reading session id in read");
-                unlink(pipename);
-                close(read_fd);
-                close(write_fd); // should close all of them
-                return -1;
-            }
-            memcpy(&session_id, buffer + 1, sizeof(session_id));
-            if ((ret_code = write_into_buffer(buffer, sizeof(session_id) + sizeof(fhandle) + sizeof(len) + 1, session_id)) != 0) {
-                fprintf(stderr, "Error writing to producer consumer buffer in session %d read: %s\n", session_id, strerror(ret_code));
-                unlink(pipename);
-                close(read_fd);
-                close(write_fd); //should close all of them
-                return -1;
-            }
-        }
-        else if (opcode == TFS_OP_CODE_SHUTDOWN_AFTER_ALL_CLOSED) {
-            if (read_all(read_fd, buffer + 1, sizeof(session_id)) != 0) {
-                perror("Error reading session id in shutdown after all closed");
-                unlink(pipename);
-                close(read_fd);
-                close(write_fd); // should close all of them
-                return -1;
-            }
-            memcpy(&session_id, buffer + 1, sizeof(session_id));
-            if ((ret_code = write_into_buffer(buffer, sizeof(session_id)+1, session_id)) != 0) {
-                fprintf(stderr, "Error writing to producer consumer buffer in session %d unmount: %s\n", session_id, strerror(ret_code));
-                unlink(pipename);
-                close(read_fd);
-                close(write_fd); //should close all of them
-                return -1;
-            }
-        }
-        else {
-            fprintf(stderr, "Received incorrect opcode\n");
-            return -1; 
-        }
-    }
- 
-    return 0;
 }

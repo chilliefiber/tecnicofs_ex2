@@ -1,5 +1,7 @@
+1- Quando fazemos open do FIFO do cliente, devemos verificar o EINTR?
 
-4- O buffer produtor consumidor pode parar a tarefa principal: há problema? 
+1- A função read_to_buffer() assume que já temos o mutex e a write_to_buffer não: isto fica confuso? Eu acho que sim, mas deste modo
+tou sempre a trancar e destrancar o mutex: acho que podia resolver isso ao enviar 1 struct e le-la toda em vez de como está
 
 5- O que é suposto acontecer quando há 1 erro numa tarefa trabalhadora?
 
@@ -32,8 +34,14 @@ coloquei essas todas no recv_id é só comparar com o session_id
 
 20- Como organizar o código?
 
-Respondidas:
+21- Enviar struct para o buffer produtor consumidor ou enviar mesmo os dados?
 
+22- Para ignorar erros no servidor, devemos fechar a sessão: o que achas de só fazer o free e colocar os ponteiros e count a 0? Talvez fechar também o fd?
+
+23- Erros no close de fds de leitura do servidor é para ignorar certo?
+
+Respondidas:
+4- O buffer produtor consumidor pode parar a tarefa principal: há problema? R: é normal
 11- O que é suposto acontecer quando fazem shutdown e depois mount outra vez? É suposto ser feito outro init ou devolver -1? R: o shutdown apaga o programa
 6- Quando fazem shutdown o que é suposto acontecer na main thread? R: quando é feito shutdown é chamar o exit
 2- No tfs_write estou no cliente a pôr tudo no mesmo write para ele poder ser atómico. No entanto isso tem o custo de alocar memória do tamanho da buffer que vamos escrever. Posso arriscar 
