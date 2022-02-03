@@ -3,5 +3,5 @@
 9- Notar que dos commits de 5 janeiro para 6 eu retirei algumas coisas em caso de erro dentro das threads (close read_fd e unlink pipename). Ver se isso faz sentido
 10- Guardar os pipenames do cliente utilizados, e verificar que ninguém utiliza o mesmo 
 14- Quando falham chamadas de sistema dentro das threads crashamos a thread ou o próprio programa: quanddo falham as cenas do tfs seguimos. Falar disto com o Baltasar
-15- Fazer testes: testes a abrir ficheiros com nomes enormes, testes a tentar escrever imenso para 1 ficheiro, testes com o shutdown, etc...
+15- Fazer testes: testes a abrir ficheiros com nomes enormes, testes a tentar escrever imenso para 1 ficheiro, testes com o shutdown, testes com PC_BUF_SIZE pequenino, etc...
 R: https://piazza.com/class/kwp87w2smmq66p?cid=160 error handling descrito pelo Breda https://piazza.com/class/kwp87w2smmq66p?cid=167 descrito pelo Paolo 
