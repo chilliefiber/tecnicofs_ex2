@@ -1,17 +1,6 @@
+1- Não percebo que situação de erro é que pode surgir no unmount: fora a falha da tranca no mutex, mas nesse caso também não devia estar a aceder ao fd de escrita?
+
 1- Quando fazemos open do FIFO do cliente, devemos verificar o EINTR?
-
-1- A função read_to_buffer() assume que já temos o mutex e a write_to_buffer não: isto fica confuso? Eu acho que sim, mas deste modo
-tou sempre a trancar e destrancar o mutex: acho que podia resolver isso ao enviar 1 struct e le-la toda em vez de como está
-
-5- O que é suposto acontecer quando há 1 erro numa tarefa trabalhadora?
-
-8- Pus a producer consumer buffer a só sinalizar mensagens completas: a lógica era para não estar sempre a trancar e destrancar o mutex para ir ler cada variável: no entanto, como está
-tranca a tarefa toda enquanto a tarefa executa as coisas todas.. 
-8a- Também há 1 problema com tfs_read/write muito grandes (maiores que o tamanho da buffer): isto não deve acontecer no projeto, mas se fosse 1 fs com ficheiros maiores se estivessemos a fazer 
-1 tfs_write e a buffer produtor consumidor fosse menor que o nr de bytes que queriamos escrever ia ficar trancado para sempre...
-
-9- O que fazer quando falham dentro da thread? Imediatamente devolver NULL ou esperar pelo unmount para fazer close dos fd? Ou não fazer return NULL, para a thread continuar ativa, visto
-que ninguém vai fazer join?
 
 10- Devo ler o session_id dentro da thread ou posso só não o enviar e ver disso só na thread principal? Se tenho de enviar, devo verificar dentro da thread que está certo? Nota para mim: se sim,
 coloquei essas todas no recv_id é só comparar com o session_id
@@ -31,14 +20,6 @@ coloquei essas todas no recv_id é só comparar com o session_id
 18- reads de valor 0 está meio ambiguo: parece-me que não faz sentido continuar a ler
 
 19- Devo verificar se a sessão está ativa no main? No caso de não estar, devo devolver -1 ao cliente ou posso só ignorar o pedido?
-
-20- Como organizar o código?
-
-21- Enviar struct para o buffer produtor consumidor ou enviar mesmo os dados?
-
-22- Para ignorar erros no servidor, devemos fechar a sessão: o que achas de só fazer o free e colocar os ponteiros e count a 0? Talvez fechar também o fd?
-
-23- Erros no close de fds de leitura do servidor é para ignorar certo?
 
 Respondidas:
 4- O buffer produtor consumidor pode parar a tarefa principal: há problema? R: é normal

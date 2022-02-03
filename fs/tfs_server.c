@@ -91,6 +91,10 @@ int main(int argc, char **argv) {
     pthread_t workers[S];
     for (int i = 0; i < S; i++) {
         worker_id = malloc(sizeof(int));
+        if (worker_id == NULL) {
+            fprintf(stderr, "Error allocing argument for thread %d\n", i);
+            return -1;
+        }
         *worker_id = i;
         if ((ret_code = pthread_create(&workers[i], NULL, worker, (void *) worker_id)) != 0) {
             fprintf(stderr, "Error creating thread: %s\n", strerror(ret_code));
@@ -105,7 +109,6 @@ int main(int argc, char **argv) {
     while (1) {
         if ((read_ret_code = read(read_fd, &opcode, 1)) < 0 && errno != EINTR) {
             perror("Main thread: Error reading opcode");
-            write(1, "read_error", strlen("read_error"));
             unlink(pipename);
             close(read_fd);
             return -1;
@@ -248,6 +251,7 @@ void parse_open(int read_fd, command *cmd) {
         free(cmd);
         return;
     }
+    cmd->filename[MAX_FILE_NAME] = '\0';
     if (read_all(read_fd, &cmd->flags, sizeof(int)) != 0) {
         fprintf(stderr, "Error reading flags in open session %d: %s\n"; cmd->session_id, strerror(errno)); 
         terminate_session(cmd->session_id);
@@ -408,7 +412,7 @@ void clear_session(int session_id) {
     }
     if ((ret_code = pthread_mutex_lock(&mutex[session_id])) != 0) {
         fprintf(stderr, "Error locking session %d mutex in free_session_id: %s\n", session_id, strerror(ret_code));
-        return;
+        return -1;
     }
     consptrs[session_id] = 0;
     prodptrs[session_id] = 0;
@@ -578,6 +582,100 @@ int write_into_buffer(const void *src, size_t len, int session_id) {
     return 0; 
 }
 
+execute_command(command *cmd) {
+    switch (cmd->opcode) {
+        case TFS_OP_CODE_MOUNT:
+            execute_mount(cmd);
+            return;
+        case TFS_OP_CODE_UNMOUNT:
+            execute_unmount(cmd);
+            return;
+        case TFS_OP_CODE_OPEN:
+            execute_open(cmd);
+            return;
+        case TFS_OP_CODE_CLOSE:
+            execute_close(cmd);
+            return;
+        case TFS_OP_CODE_WRITE:
+            execute_write(cmd);
+            return;
+        case TFS_OP_CODE_READ:
+            execute_read(cmd);
+            return;
+        case TFS_OP_CODE_SHUTDOWN_AFTER_ALL_CLOSED:
+            execute_shutdown(cmd);
+            return;
+        default:
+            free(cmd);
+            fprintf(stderr, "Received invalid opcode with value: %d\n", opcode);
+            return;
+    }
+}
+
+execute_mount(command *cmd) {
+    fprintf(stderr, "Mounting in thread %d with pipename\n", cmd->session_id, cmd->fifo_name);
+    // technically write_fd is shared memory because it can be used by 
+    // the main thread when it calls terminate_session: however,
+    // there is no need to protect it with the mutex because, since the client is sequential,
+    // it is impossible for this thread to be executing a command and for the main thread to be receiving
+    // another command with the session id (for correct clients, and they are correct according to the 
+    // project description. I still protect the access because it is shared memory and I don't want to lose points
+    int ret_code;
+    
+    if ((ret_code = pthread_mutex_lock(&session_mutex[cmd->session_id])) != 0) {
+        fprintf(stderr, "Error locking mutex for session %d in mount: %s\n", cmd->session_id, strerror(ret_code));
+        terminate_session(cmd->session_id);
+        free(cmd);
+        return;
+    }
+    while ((write_fds[cmd->session_id] = open(cmd->fifo_name, O_WRONLY)) == -1) {
+        if (errno == EINTR)
+            continue;
+        perror("Error opening client's fifo in mount");
+        if ((ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
+            fprintf(stderr, "Error unlocking mutex for session %d in mount: %s\n", cmd->session_id, strerror(ret_code));
+        }
+        terminate_session(cmd->session_id);
+        free(cmd);
+        return;
+    }
+    fprintf(stderr, "We opened the client's pipe for writing\n");
+    if (write_all(write_fds[cmd->session_id], &cmd->session_id, sizeof(int)) != 0) {
+        perror("Error writing to client's fifo in mount");
+        if ((ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
+            fprintf(stderr, "Error unlocking mutex for session %d in mount: %s\n", cmd->session_id, strerror(ret_code));
+        }
+        terminate_session(cmd->session_id);
+        free(cmd);
+        return;
+    }
+    if ((ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
+        fprintf(stderr, "Error unlocking mutex for session %d in mount: %s\n", cmd->session_id, strerror(ret_code));
+        terminate_session(cmd->session_id);
+        free(cmd);
+        return;
+    }
+    free(cmd);
+    fprintf(stderr, "We wrote to the client the session id\n");
+}
+
+execute_unmount(command *cmd) {
+    fprintf(stderr, "We're going to unmount in session %d\n", cmd->session_id);
+    ret_code = free_session_id(session_id); 
+    printf("We got that ret_code %d\n", ret_code);
+    if (write_all(write_fd, &ret_code, sizeof(int)) != 0) {
+        perror("Error writing to client's fifo in unmount");
+        close(write_fd);
+        return NULL;
+    }
+    fprintf(stderr, "We wrote that ret_code\n");
+    if (close(write_fd) != 0) {
+        perror("Error closing write file descriptor in unmount");
+        return NULL;
+    }
+    // now the client
+    printf("We're done unmounting\n");
+}
 void *worker(void *arg) {
     int *arg_int = (int *) arg;
     int session_id = *arg_int, send_id, recv_id;
@@ -587,8 +685,6 @@ void *worker(void *arg) {
     int ret_code, ret_error;
     int flags, fhandle;
     char pipe_name[FIFO_NAME_SIZE+1], file_name[MAX_FILE_NAME+1], rw_buffer[PIPE_BUF];
-    if (session_id < 0 || session_id >= S)
-        return NULL;
     int write_fd = -1;
     size_t len;
     while (1) {
@@ -596,56 +692,9 @@ void *worker(void *arg) {
             fprintf(stderr, "Error reading from PC buffer in session %d: %s\n", session_id);
             terminate_session(session_id);
             continue;
-        }  
-        if (opcode == TFS_OP_CODE_MOUNT) {
-            printf("Mounting in thread\n");
-            if ((ret_error = read_from_buffer(pipe_name, FIFO_NAME_SIZE, session_id)) != 0) {
-                fprintf(stderr, "Error reading pipe name from buffer in mount session %d: %s\n", session_id, strerror(ret_error));
-                return NULL;
-            }
-            pipe_name[FIFO_NAME_SIZE] = '\0'; 
-            printf("The pipe_name is %s\n", pipe_name);
-            if ((write_fd = open(pipe_name, O_WRONLY)) == -1) {
-                perror("Error opening client's fifo in mount");
-                return NULL;
-            }
-
-            printf("We opened the client's pipe for writing\n");
-            send_id = session_id;
-            printf("We initialized the file system\n"); 
-            if (write_all(write_fd, &send_id, sizeof(int)) != 0) {
-                perror("Error writing to client's fifo in mount");
-                close(write_fd); 
-                // write_fd = -1; in case we don't return
-                return NULL;
-            }
-            printf("We wrote to the client\n");
-            if (send_id == -1) {
-                close(write_fd);
-                write_fd = -1;
-            }
         }
+        execute_command(cmd);  
         else if (opcode == TFS_OP_CODE_UNMOUNT) {
-            printf("We're going to unmount\n");
-            if ((ret_error = read_from_buffer(&recv_id, sizeof(recv_id), session_id) != 0)) {
-                fprintf(stderr, "Error reading session_id from buffer in unmount session %d: %s\n", session_id, strerror(ret_error));
-                return NULL;
-            }
-            printf("We read from the pc buffer in unmount\n");
-            ret_code = free_session_id(session_id); 
-            printf("We got that ret_code %d\n", ret_code);
-            if (write_all(write_fd, &ret_code, sizeof(int)) != 0) {
-                perror("Error writing to client's fifo in unmount");
-                close(write_fd);
-                return NULL;
-            }
-            printf("We wrote that ret_code\n");
-            if (close(write_fd) != 0) {
-                perror("Error closing write file descriptor in unmount");
-                return NULL;
-            }
-            // now the client
-            printf("We're done unmounting\n");
         }
         else if (opcode == TFS_OP_CODE_OPEN) {
             printf("Going to open a file\n");
