@@ -1,8 +1,8 @@
 #ifndef STATE_H
 #define STATE_H
 
-#include "config.h"
 #include "common/common.h"
+#include "config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,8 +12,8 @@
  * Directory entry
  */
 typedef struct {
-    char d_name[MAX_FILE_NAME];
-    int d_inumber;
+  char d_name[MAX_FILE_NAME];
+  int d_inumber;
 } dir_entry_t;
 
 typedef enum { T_FILE, T_DIRECTORY } inode_type;
@@ -22,10 +22,10 @@ typedef enum { T_FILE, T_DIRECTORY } inode_type;
  * I-node
  */
 typedef struct {
-    inode_type i_node_type;
-    size_t i_size;
-    int i_data_block;
-    /* in a real FS, more fields would exist here */
+  inode_type i_node_type;
+  size_t i_size;
+  int i_data_block;
+  /* in a real FS, more fields would exist here */
 } inode_t;
 
 typedef enum { FREE = 0, TAKEN = 1 } allocation_state_t;
@@ -34,8 +34,8 @@ typedef enum { FREE = 0, TAKEN = 1 } allocation_state_t;
  * Open file entry (in open file table)
  */
 typedef struct {
-    int of_inumber;
-    size_t of_offset;
+  int of_inumber;
+  size_t of_offset;
 } open_file_entry_t;
 
 #define MAX_DIR_ENTRIES (BLOCK_SIZE / sizeof(dir_entry_t))
