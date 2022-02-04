@@ -13,7 +13,7 @@
 #include <signal.h>
 
 #define S (20)
-#define PC_BUF_SIZE (PIPE_BUF) // PIPE_BUF chosen because this way it can fit an entire message from the client
+#define PC_BUF_SIZE (8) // chosen because this way it can fit an entire pointer in a 64 bit architecture
 
 typedef struct command {
     char opcode;
@@ -31,19 +31,21 @@ typedef struct command {
 
 pthread_mutex_t exit_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t session_mutex[S] = {PTHREAD_MUTEX_INITIALIZER}; // this mutex will cover the prodptr, consptr, count and write_fd of the session
-                                                                // using a separate mutex for the write fd would be too much memory for little reward
+                                                                // using a separate mutex for the write fd would logically make some sense but in the end
+                                                                // I thought it didn't matter
 pthread_mutex_t free_session_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t can_write[S] = {PTHREAD_COND_INITIALIZER};
 pthread_cond_t can_read[S] = {PTHREAD_COND_INITIALIZER};
 size_t prodptrs[S] = {0};
 size_t consptrs[S] = {0};
 size_t counts[S] = {0};
-char pc_buffers[S][PIPE_BUF]; 
+char pc_buffers[S][PC_BUF_SIZE]; 
 char taken_session[S] = {0};
 int write_fds[S] = {-1};
 
 void *worker(void *arg);
 void parse_command(int read_fd, char opcode);
+void safe_exit(int exit_code);
 
 int main(int argc, char **argv) {
     if (argc < 2) {
@@ -64,7 +66,7 @@ int main(int argc, char **argv) {
         perror("Error unlinking");
         return -1;
     } 
-    if (mkfifo(pipename, 0777) != 0) {
+    if (mkfifo(pipename, 0777) != 0) { // stupid permissions, taken from the lecture slides
         perror("Error creating named pipe");
         return -1;
     }
@@ -91,16 +93,16 @@ int main(int argc, char **argv) {
         worker_id = malloc(sizeof(int));
         if (worker_id == NULL) {
             fprintf(stderr, "Error allocing argument for thread %d\n", i);
-            return -1;
+            safe_exit(EXIT_FAILURE);
         }
         *worker_id = i;
         if ((ret_code = pthread_create(&workers[i], NULL, worker, (void *) worker_id)) != 0) {
             fprintf(stderr, "Error creating thread: %s\n", strerror(ret_code));
-            return -1;
+            safe_exit(EXIT_FAILURE);
         }
         if ((ret_code = pthread_detach(workers[i])) != 0) {
             fprintf(stderr, "Error detaching thread: %s\n", strerror(ret_code));
-            return -1;
+            safe_exit(EXIT_FAILURE);
         }
     }
     
@@ -109,7 +111,7 @@ int main(int argc, char **argv) {
             perror("Main thread: Error reading opcode");
             unlink(pipename);
             close(read_fd);
-            return -1;
+            safe_exit(EXIT_FAILURE);
         }
         else if (errno == EINTR)
             continue;
@@ -120,7 +122,7 @@ int main(int argc, char **argv) {
                 perror("Error opening server's FIFO for reading"); // we close the server here: not being able to open the FIFO is a catastrophic error
                 close(read_fd);
                 unlink(pipename);
-                return -1;
+                safe_exit(EXIT_FAILURE);
             } // wait here for someone to open
             if (close(aux_read_fd) != 0) {
                 perror("Error closing auxiliary read file descriptor"); // here I decided not to close the server: the other fd is still open and might be usable
@@ -130,7 +132,7 @@ int main(int argc, char **argv) {
         parse_command(read_fd, opcode);
     }
  
-    return 0;
+    safe_exit(EXIT_SUCCESS);
 }
 
 bool valid_session_id(int session_id) {
@@ -143,12 +145,12 @@ bool active_session(int session_id) {
     if (valid_session_id(session_id)) {
         if ((ret_code = pthread_mutex_lock(&free_session_mutex)) != 0) {
             fprintf(stderr, "Error locking free_session_mutex in active_session_id(): %s\n", strerror(ret_code));
-            return active;
+            safe_exit(EXIT_FAILURE);
         }
         active = taken_session[session_id];
         if ((ret_code = pthread_mutex_unlock(&free_session_mutex)) != 0) {
             fprintf(stderr, "Error unlocking free_session_mutex in active_session_id(): %s\n", strerror(ret_code));
-            return false;
+            safe_exit(EXIT_FAILURE);
         }
     }
     else
@@ -157,29 +159,36 @@ bool active_session(int session_id) {
 }
 
 int get_session_id() { // an int because session_id are ints
-    if (pthread_mutex_lock(&free_session_mutex) != 0)
-        return -1;
+    int ret_code;
+    if ((ret_code = pthread_mutex_lock(&free_session_mutex)) != 0) {
+        fprintf(stderr, "Error locking free session mutex in get session id: %s\n", strerror(ret_code));
+        safe_exit(EXIT_FAILURE);
+    }
     for (int i = 0; i < S; i++) {
         if (!taken_session[i]) {
             taken_session[i] = 1;
-            if (pthread_mutex_unlock(&free_session_mutex) != 0) {
-                return -1; 
+            if ((ret_code = pthread_mutex_unlock(&free_session_mutex)) != 0) {
+                fprintf(stderr, "Error unlocking free session mutex in get session id: %s\n", strerror(ret_code));
+                safe_exit(EXIT_FAILURE);
             }
             return i;
         }
     }
-    pthread_mutex_unlock(&free_session_mutex);
+    if ((ret_code = pthread_mutex_unlock(&free_session_mutex)) != 0) {
+        fprintf(stderr, "Error unlocking free session mutex in get session id: %s\n", strerror(ret_code));
+        safe_exit(EXIT_FAILURE);
+    }
     return -1;
 } 
 
 void safe_exit(int exit_code) {
     int ret_code;
     if ((ret_code = pthread_mutex_lock(&exit_mutex)) != 0) {
-        fprintf(stderr, "Error locking exit mutex\n");
+        fprintf(stderr, "Error locking exit mutex: %s\n", strerror(ret_code));
         exit(EXIT_FAILURE);
     }
     exit(exit_code); // I exit anyway to make sure the program crashes: not sure if I should, since exit is not MT safe. However, in my man page (Linux, not POSIX)
-        // none of the errors are likely to happen: EINVAL because the mutex is always properly initialized (with the macro), and EDEADLOCK because this is not recursive
+        // none of the errors are likely to happen: EINVAL because the mutex is always properly initialized (with the macro), and EDEADLOCK because this is not recursive mutex
 }
 
 void _write_into_buffer_unsychronized(const void *src, size_t len, char *pc_buffer, size_t *prodptr, size_t *count) {
@@ -225,7 +234,7 @@ int read_from_buffer(void *dest, size_t len, int session_id) {
     size_t to_read, total_read = 0; 
     if ((ret_code = pthread_mutex_lock(&session_mutex[session_id])) != 0) {
         fprintf(stderr, "Error locking mutex in read_from_buffer, session %d: %s\n", session_id, strerror(ret_code));
-        return -1;
+        safe_exit(EXIT_FAILURE);
     }
     // this is a bit nasty but it allows for the (very unlikely if not impossible) chance that there are some bytes to be
     // read but not enough to fill dest. 
@@ -233,14 +242,7 @@ int read_from_buffer(void *dest, size_t len, int session_id) {
         while (counts[session_id] == 0) {
             if ((ret_code = pthread_cond_wait(&can_read[session_id], &session_mutex[session_id])) != 0) {
                 fprintf(stderr, "Error waiting in read_from_buffer, session %d: %s\n", session_id, strerror(ret_code));
-                // according to linux manpage, pthread_cond_wait never returns an error. According to POSIX manpage
-                // "all these error checks shall act as if they were performed 
-                //immediately at the beginning of processing for the function and shall cause an error return, in effect, 
-                // prior to modifying the state of the mutex specified by mutex or the condition variable specified by cond."
-                // thus, the locked mutex would not have been unlocked, so we unlock it here
-                if ((ret_code = pthread_mutex_unlock(&session_mutex[session_id])) != 0)
-                    fprintf(stderr, "Error unlocking mutex in read_from_buffer, session %d: %s\n", session_id, strerror(ret_code));
-                return -1;
+                safe_exit(EXIT_FAILURE);
             }
         }
         // we read only the necessary bytes, or the ones available if there are less than the necessary
@@ -250,15 +252,13 @@ int read_from_buffer(void *dest, size_t len, int session_id) {
         total_read += to_read;
         if ((ret_code = pthread_cond_signal(&can_write[session_id])) != 0) {
             fprintf(stderr, "Error signalling ability to write to the producer consumer buffer of session %d: %s\n", session_id, strerror(ret_code));
-            if ((ret_code = pthread_mutex_unlock(&session_mutex[session_id])) != 0)
-                fprintf(stderr, "Error unlocking mutex in read_from_buffer, session %d: %s\n", session_id, strerror(ret_code));
-            return -1;
+            safe_exit(EXIT_FAILURE);
         }
         
     }
     if ((ret_code = pthread_mutex_unlock(&session_mutex[session_id])) != 0) {
         fprintf(stderr, "Error unlocking mutex in read_from_buffer, session %d: %s\n", session_id, strerror(ret_code));
-        return -1; 
+        safe_exit(EXIT_FAILURE);
     }
     return 0; 
 }
@@ -271,14 +271,14 @@ int write_into_buffer(const void *src, size_t len, int session_id) {
     int ret_code = 0;
     if ((ret_code = pthread_mutex_lock(&session_mutex[session_id])) != 0) {
         fprintf(stderr, "Error locking session %d mutex in write_into_buffer: %s\n", session_id, strerror(ret_code));
-        return -1;
+        safe_exit(EXIT_FAILURE);
     }
     size_t to_write, total_written = 0, available_bytes;
     while (len > 0) {
         while (counts[session_id] == PC_BUF_SIZE) { 
             if ((ret_code = pthread_cond_wait(&can_write[session_id], &session_mutex[session_id])) != 0) {
                 fprintf(stderr, "Error waiting to write in pc buffer session %d: %s\n", session_id, strerror(ret_code));
-                return -1;
+                safe_exit(EXIT_FAILURE);
             }
             // notice that if the client was not sequential, there would be a chance that the session
             // would no longer be active here. However with the sequential client what will happen will
@@ -294,18 +294,23 @@ int write_into_buffer(const void *src, size_t len, int session_id) {
         len -= to_write;
         if ((ret_code = pthread_cond_signal(&can_read[session_id])) != 0) {
             fprintf(stderr, "Error signalling ability to read in session %d: %s\n", session_id, strerror(ret_code));
-            if ((ret_code = pthread_mutex_unlock(&session_mutex[session_id])) != 0)
-                fprintf(stderr, "Error unlocking mutex in write_into_buffer session %d: %s\n", session_id, strerror(ret_code));
-            return -1;
+            safe_exit(EXIT_FAILURE);
         }
     }
     if ((ret_code = pthread_mutex_unlock(&session_mutex[session_id])) != 0) {
         fprintf(stderr, "Error unlocking mutex in write_into_buffer session %d: %s\n", session_id, strerror(ret_code));
-        return -1;
+        safe_exit(EXIT_FAILURE);
     }
     return 0; 
 }
-void clear_session(int session_id) {
+
+void send_return_code(int session_id, int ret_code) {
+    if (write_fds[session_id] != -1 && write_all(write_fds[session_id], &ret_code, sizeof(int)) != 0) {
+        fprintf(stderr, "Error writing to client's fifo when clearing session %d: %s\n", session_id, strerror(errno));
+    }
+}
+
+void clear_session(int session_id, int send_code) {
     int ret_code;
     if (!valid_session_id(session_id)) {
         fprintf(stderr, "Invalid session_id sent to clear_session: %d\n", session_id);
@@ -313,24 +318,21 @@ void clear_session(int session_id) {
     }
     if ((ret_code = pthread_mutex_lock(&session_mutex[session_id])) != 0) {
         fprintf(stderr, "Error locking session %d mutex in free_session_id: %s\n", session_id, strerror(ret_code));
-        return; // note that if this fails, now the state of the session's pc buffer and file descriptor is undefined, I 
-                // didn't want to access shared memory without the mutex
+        send_return_code(session_id, -1); // even though we failed to lock the mutex, we try to send the error message
+        safe_exit(EXIT_FAILURE);
     }
+    // clear pc buffer
     consptrs[session_id] = 0;
     prodptrs[session_id] = 0;
     counts[session_id] = 0;
-    ret_code = -1;
-    // when we are terminating a session, if there is an active file descriptor to communicate with
-    // we send a -1
-    if (write_fds[session_id] != -1 && write_all(write_fds[session_id], &ret_code, sizeof(int)) != 0) {
-        fprintf(stderr, "Error writing to client's fifo when clearing session %d: %s\n", session_id, strerror(errno));
-    }
-    if (write_fds[session_id] != -1 && close(write_fds[session_id]) != 0)
+    // send final code to client
+    send_return_code(session_id, send_code);
+    if (write_fds[session_id] != -1 && close(write_fds[session_id]) != 0) // in Linux, ignore EINTR in close
         fprintf(stderr, "Error closing file descriptor %d for session %d: %s\n", write_fds[session_id], session_id, strerror(errno));
     write_fds[session_id] = -1;
     if ((ret_code = pthread_mutex_unlock(&session_mutex[session_id])) != 0) {
         fprintf(stderr, "Error unlocking session %d mutex in free_session_id: %s\n", session_id, strerror(ret_code));
-        return;
+        safe_exit(EXIT_FAILURE);
     }
 }
 
@@ -338,21 +340,23 @@ void free_session_id(int session_id) {
     int ret_code;
     if ((ret_code = pthread_mutex_lock(&free_session_mutex)) != 0) {
         fprintf(stderr, "Error locking free session mutex in free_session_id: %s\n", strerror(ret_code));
-        return;
+        safe_exit(EXIT_FAILURE);
     }
     taken_session[session_id] = 0; 
     if ((ret_code = pthread_mutex_unlock(&free_session_mutex)) != 0) {
         fprintf(stderr, "Error unlocking free session mutex in free_session_id: %s\n", strerror(ret_code));
+        safe_exit(EXIT_FAILURE);
     } 
 }
 
 // this function can be called by the receiver thread and the worker thread, but not at the same time
 // because the client is sequential so the receiver thread will never receive a new command for the same session while
 // the worker thread is working
-void terminate_session(int session_id) {
-   clear_session(session_id);
+void terminate_session(int session_id, int send_code) {
+   clear_session(session_id, send_code);
    free_session_id(session_id);  
 }
+
 void parse_mount(int read_fd, command *cmd) {
     int write_fd;
     int session_id;
@@ -386,7 +390,7 @@ void parse_mount(int read_fd, command *cmd) {
         if (write_into_buffer(&cmd, sizeof(cmd), session_id) != 0) {
             fprintf(stderr, "Error writing to producer consumer buffer in session %d mount\n", session_id);
             free(cmd);
-            terminate_session(session_id);
+            terminate_session(session_id, -1);
         }
     }
 }
@@ -404,7 +408,7 @@ void parse_unmount(int read_fd, command *cmd) {
     }
     if ((write_into_buffer(&cmd, sizeof(cmd), cmd->session_id)) != 0) {
         fprintf(stderr, "Error writing to producer consumer buffer in session %d unmount\n", cmd->session_id);
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         free(cmd);
     }
 }
@@ -422,20 +426,20 @@ void parse_open(int read_fd, command *cmd) {
     }
     if (read_all(read_fd, cmd->file_name, MAX_FILE_NAME ) != 0) {
         fprintf(stderr, "Error reading filename in open session %d: %s\n", cmd->session_id, strerror(errno)); 
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         free(cmd);
         return;
     }
     cmd->file_name[MAX_FILE_NAME] = '\0';
     if (read_all(read_fd, &cmd->flags, sizeof(int)) != 0) {
         fprintf(stderr, "Error reading flags in open session %d: %s\n", cmd->session_id, strerror(errno)); 
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         free(cmd);
         return;
     }
     if (write_into_buffer(&cmd, sizeof(cmd), cmd->session_id) != 0) {
         fprintf(stderr, "Error writing to producer consumer buffer in session %d open\n", cmd->session_id);
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         free(cmd);
     }
 }
@@ -453,13 +457,13 @@ void parse_close(int read_fd, command *cmd) {
     }
     if (read_all(read_fd, &cmd->fhandle, sizeof(int)) != 0) {
         fprintf(stderr, "Error reading fhandle in open session %d: %s\n", cmd->session_id, strerror(errno)); 
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         free(cmd);
         return;
     }
     if (write_into_buffer(&cmd, sizeof(cmd), cmd->session_id) != 0) {
         fprintf(stderr, "Error writing to producer consumer buffer in session %d close\n", cmd->session_id);
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         free(cmd);
     }
 }
@@ -477,25 +481,25 @@ void parse_write(int read_fd, command *cmd) {
     }
     if (read_all(read_fd, &cmd->fhandle, sizeof(int)) != 0) {
         fprintf(stderr, "Error reading fhandle in write session %d: %s\n", cmd->session_id, strerror(errno)); 
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         free(cmd);
         return;
     }
     if (read_all(read_fd, &cmd->len, sizeof(size_t)) != 0) {
         fprintf(stderr, "Error reading len in write session %d: %s\n", cmd->session_id, strerror(errno)); 
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         free(cmd);
         return;
     }
     if (cmd->len > 0 && read_all(read_fd, cmd->rw_buffer, cmd->len) != 0) {
         fprintf(stderr, "Error reading bytes to write in write session %d: %s\n", cmd->session_id, strerror(errno));
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         free(cmd);
         return;
     }
     if (write_into_buffer(&cmd, sizeof(cmd), cmd->session_id) != 0) {
         fprintf(stderr, "Error writing to producer consumer buffer in session %d write\n", cmd->session_id);
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         free(cmd);
     }
 }
@@ -513,19 +517,19 @@ void parse_read(int read_fd, command *cmd) {
     }
     if (read_all(read_fd, &cmd->fhandle, sizeof(int)) != 0) {
         fprintf(stderr, "Error reading fhandle in read session %d: %s\n", cmd->session_id, strerror(errno)); 
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         free(cmd);
         return;
     }
     if (read_all(read_fd, &cmd->len, sizeof(size_t)) != 0) {
         fprintf(stderr, "Error reading len in read session %d: %s\n", cmd->session_id, strerror(errno)); 
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         free(cmd);
         return;
     }
     if (write_into_buffer(&cmd, sizeof(cmd), cmd->session_id) != 0) {
         fprintf(stderr, "Error writing to producer consumer buffer in session %d read\n", cmd->session_id);
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         free(cmd);
     }
 }
@@ -543,7 +547,7 @@ void parse_shutdown(int read_fd, command *cmd) {
     }
     if (write_into_buffer(&cmd, sizeof(cmd), cmd->session_id) != 0) {
         fprintf(stderr, "Error writing to producer consumer buffer in session %d unmount\n", cmd->session_id);
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         free(cmd);
     }
 }
@@ -590,16 +594,16 @@ void execute_mount(command *cmd) {
     fprintf(stderr, "Mounting in thread %d with pipename %s\n", cmd->session_id, cmd->fifo_name);
     // technically write_fd is shared memory because it can be used by 
     // the main thread when it calls terminate_session: however,
-    // there is no need to protect it with the mutex because, since the client is sequential,
+    // there is no need to protect it with the mutex IMO because, since the client is sequential,
     // it is impossible for this thread to be executing a command and for the main thread to be receiving
-    // another command with the session id (for correct clients, and they are correct according to the 
-    // project description. I still protect the access because it is shared memory and I don't want to lose points
+    // another command with the same session id (for correct clients, and they are correct according to the 
+    // project description). I still protect the access because it is shared memory and I don't want to lose points
     int ret_code;
     
     if ((ret_code = pthread_mutex_lock(&session_mutex[cmd->session_id])) != 0) {
         fprintf(stderr, "Error locking mutex for session %d in mount: %s\n", cmd->session_id, strerror(ret_code));
-        terminate_session(cmd->session_id);
-        return;
+        terminate_session(cmd->session_id, -1);
+        safe_exit(EXIT_FAILURE);
     }
     while ((write_fds[cmd->session_id] = open(cmd->fifo_name, O_WRONLY)) == -1) {
         if (errno == EINTR)
@@ -607,8 +611,9 @@ void execute_mount(command *cmd) {
         perror("Error opening client's fifo in mount");
         if ((ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
             fprintf(stderr, "Error unlocking mutex for session %d in mount: %s\n", cmd->session_id, strerror(ret_code));
+            safe_exit(EXIT_FAILURE);
         }
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         return;
     }
     fprintf(stderr, "We opened the client's pipe for writing\n");
@@ -616,47 +621,22 @@ void execute_mount(command *cmd) {
         perror("Error writing to client's fifo in mount");
         if ((ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
             fprintf(stderr, "Error unlocking mutex for session %d in mount: %s\n", cmd->session_id, strerror(ret_code));
+            terminate_session(cmd->session_id, -1);
+            safe_exit(EXIT_FAILURE);
         }
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         return;
     }
     if ((ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
         fprintf(stderr, "Error unlocking mutex for session %d in mount: %s\n", cmd->session_id, strerror(ret_code));
-        terminate_session(cmd->session_id);
-        return;
+        safe_exit(EXIT_FAILURE);
     }
     fprintf(stderr, "We wrote to the client the session id\n");
 }
 
 void execute_unmount(command *cmd) {
-    int ret_code = 0;
-    // this function repeats a lot of the same code of 
-    // terminate_session: the difference is I chose to ignore errors locking
-    // the mutex to make sure I respect protocol and send a return value
-    // I just want to reemphasize that it seems pointless to lock the mutex
-    // here, because since the client is sequential there is no chance
-    // that someone else is trying to access shared memory besides us
     fprintf(stderr, "We're going to unmount in session %d\n", cmd->session_id);
-    if ((ret_code = pthread_mutex_lock(&session_mutex[cmd->session_id])) != 0) {
-        fprintf(stderr, "Error locking session %d mutex in unmount: %s\n", cmd->session_id, strerror(ret_code));
-        ret_code = -1;
-    }
-    consptrs[cmd->session_id] = 0;
-    prodptrs[cmd->session_id] = 0;
-    counts[cmd->session_id] = 0;
-    // when we are terminating a session, if there is an active file descriptor to communicate with
-    // we send a -1
-    if (write_all(write_fds[cmd->session_id], &ret_code, sizeof(int)) != 0) {
-        fprintf(stderr, "Error writing to client's fifo when unmounting session %d: %s\n", cmd->session_id, strerror(errno));
-    }
-    if (write_fds[cmd->session_id] != -1 && close(write_fds[cmd->session_id]) != 0)
-        fprintf(stderr, "Error closing file descriptor %d for session %d unmount: %s\n", write_fds[cmd->session_id], cmd->session_id, strerror(errno));
-    write_fds[cmd->session_id] = -1;
-    // if ret_code is -1 here it means we didn't lock the mutex: we don't try to unlock it
-    if (ret_code != -1 && (ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
-        fprintf(stderr, "Error unlocking session %d mutex in unmount: %s\n", cmd->session_id, strerror(ret_code));
-    }
-    free_session_id(cmd->session_id); // we only free here because otherwise someone could get this session's id before we're done doing stuff 
+    terminate_session(cmd->session_id, 0);
     fprintf(stderr, "We're done unmounting\n");
 }
 
@@ -667,21 +647,20 @@ void execute_open(command *cmd) {
     fprintf(stderr, "We opened the file %s in session %d with ret_code %d\n", cmd->file_name, cmd->session_id, ret_code);
     if ((aux_ret_code = pthread_mutex_lock(&session_mutex[cmd->session_id])) != 0) {
         fprintf(stderr, "Error locking mutex in session %d open: %s\n", cmd->session_id, strerror(aux_ret_code));
-        terminate_session(cmd->session_id);
-        return;
+        terminate_session(cmd->session_id, -1);
+        safe_exit(EXIT_FAILURE);
     }
     if (write_all(write_fds[cmd->session_id], &ret_code, sizeof(int)) != 0) {
         perror("Error writing to client's fifo in open");
         if ((ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
             fprintf(stderr, "Error unlocking mutex for session %d in open: %s\n", cmd->session_id, strerror(ret_code));
         }
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         return;
     }
     if ((ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
         fprintf(stderr, "Error unlocking mutex for session %d in open: %s\n", cmd->session_id, strerror(ret_code));
-        terminate_session(cmd->session_id);
-        return;
+        safe_exit(EXIT_FAILURE);
     }
     fprintf(stderr, "We wrote the ret_code of open to client through the pipe of session %d\n", cmd->session_id);
 }
@@ -693,21 +672,20 @@ void execute_close(command *cmd) {
     fprintf(stderr, "We got the ret_code %d for the close in session %d\n", ret_code, cmd->session_id);
     if ((aux_ret_code = pthread_mutex_lock(&session_mutex[cmd->session_id])) != 0) {
         fprintf(stderr, "Error locking mutex in session %d close: %s\n", cmd->session_id, strerror(aux_ret_code));
-        terminate_session(cmd->session_id);
-        return;
+        terminate_session(cmd->session_id, -1);
+        safe_exit(EXIT_FAILURE);
     }
     if (write_all(write_fds[cmd->session_id], &ret_code, sizeof(int)) != 0) {
         perror("Error writing to client's fifo in close");
         if ((ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
             fprintf(stderr, "Error unlocking mutex for session %d in close: %s\n", cmd->session_id, strerror(ret_code));
         }
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         return;
     }
     if ((ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
         fprintf(stderr, "Error unlocking mutex for session %d in close: %s\n", cmd->session_id, strerror(ret_code));
-        terminate_session(cmd->session_id);
-        return;
+        safe_exit(EXIT_FAILURE);
     }
     fprintf(stderr, "We wrote the ret_code of the close through the pipe of session %d\n", cmd->session_id);
 }
@@ -719,21 +697,20 @@ void execute_write(command *cmd) {
     fprintf(stderr, "We wrote into tfs with ret_code %d in session %d and fhandle %d\n", ret_code, cmd->session_id, cmd->fhandle); 
     if ((aux_ret_code = pthread_mutex_lock(&session_mutex[cmd->session_id])) != 0) {
         fprintf(stderr, "Error locking mutex in session %d write: %s\n", cmd->session_id, strerror(aux_ret_code));
-        terminate_session(cmd->session_id);
-        return;
+        terminate_session(cmd->session_id, -1);
+        safe_exit(EXIT_FAILURE);
     }
     if (write_all(write_fds[cmd->session_id], &ret_code, sizeof(int)) != 0) {
         perror("Error writing to client's fifo in write");
         if ((ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
             fprintf(stderr, "Error unlocking mutex for session %d in write: %s\n", cmd->session_id, strerror(ret_code));
         }
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         return;
     }
     if ((ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
         fprintf(stderr, "Error unlocking mutex for session %d in write: %s\n", cmd->session_id, strerror(ret_code));
-        terminate_session(cmd->session_id);
-        return;
+        safe_exit(EXIT_FAILURE);
     }
     fprintf(stderr, "We wrote the ret_code of a write into the client's pipe of session %d\n", cmd->session_id);
 }
@@ -745,15 +722,16 @@ void execute_read(command *cmd) {
     fprintf(stderr, "We read from tfs session %d with return code: %d\n", cmd->session_id, ret_code);
     if ((aux_ret_code = pthread_mutex_lock(&session_mutex[cmd->session_id])) != 0) {
         fprintf(stderr, "Error locking mutex in session %d read: %s\n", cmd->session_id, strerror(aux_ret_code));
-        terminate_session(cmd->session_id);
-        return;
+        terminate_session(cmd->session_id, -1);
+        safe_exit(EXIT_FAILURE);
     }
     if (write_all(write_fds[cmd->session_id], &ret_code, sizeof(int)) != 0) {
         perror("Error writing return code to client's fifo in read");
         if ((ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
             fprintf(stderr, "Error unlocking mutex for session %d in read: %s\n", cmd->session_id, strerror(ret_code));
+            safe_exit(EXIT_FAILURE);
         }
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         return;
     }
     fprintf(stderr, "We wrote into the client's pipe the ret_code in session %d read\n", cmd->session_id);
@@ -761,14 +739,14 @@ void execute_read(command *cmd) {
         perror("Error writing bytes to client's fifo in read");
         if ((ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
             fprintf(stderr, "Error unlocking mutex for session %d in read: %s\n", cmd->session_id, strerror(ret_code));
+            safe_exit(EXIT_FAILURE);
         }
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1); // here it doesn't make much sense to send the -1 but it won't hurt I guess
         return;
     }
     if ((ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
         fprintf(stderr, "Error unlocking mutex for session %d in write: %s\n", cmd->session_id, strerror(ret_code));
-        terminate_session(cmd->session_id);
-        return;
+        safe_exit(EXIT_FAILURE);
     }
     fprintf(stderr, "We wrote all the bytes in session %d\n", cmd->session_id);
 }
@@ -778,21 +756,21 @@ void execute_shutdown(command *cmd) {
     int ret_code = tfs_destroy_after_all_closed();
     if ((aux_ret_code = pthread_mutex_lock(&session_mutex[cmd->session_id])) != 0) {
         fprintf(stderr, "Error locking mutex in session %d shutdown: %s\n", cmd->session_id, strerror(aux_ret_code));
-        terminate_session(cmd->session_id);
-        return;
+        terminate_session(cmd->session_id, -1);
+        safe_exit(EXIT_FAILURE);
     }
     if (write_all(write_fds[cmd->session_id], &ret_code, sizeof(ret_code)) != 0) {
         perror("Error writing to client's fifo in shutdown");
         if ((aux_ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
             fprintf(stderr, "Error unlocking mutex for session %d in read: %s\n", cmd->session_id, strerror(aux_ret_code));
+            safe_exit(EXIT_FAILURE);
         }
-        terminate_session(cmd->session_id);
+        terminate_session(cmd->session_id, -1);
         return;
     }
     if ((aux_ret_code = pthread_mutex_unlock(&session_mutex[cmd->session_id])) != 0) {
         fprintf(stderr, "Error unlocking mutex for session %d in shutdown: %s\n", cmd->session_id, strerror(aux_ret_code));
-        terminate_session(cmd->session_id);
-        return;
+        safe_exit(EXIT_FAILURE);
     }
     // if the filesystem was destroyed successfully we exit the program
     if (ret_code == 0) {
@@ -841,7 +819,7 @@ void *worker(void *arg) {
     while (1) {
         if (read_from_buffer(&cmd, sizeof(cmd), session_id) != 0) {
             fprintf(stderr, "Error reading from PC buffer in session %d\n", session_id);
-            terminate_session(session_id);
+            terminate_session(session_id, -1);
             continue;
         }
         execute_command(cmd);  

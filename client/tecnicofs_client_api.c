@@ -8,20 +8,25 @@
 #include <unistd.h>
 #include <errno.h>
 #include <limits.h>
+#include <stdbool.h>
 
-int write_fd; // fd of server's FIFO, open for writes only
-int read_fd; // fd of this client's FIFO, open for reads only
-int session_id;
+int write_fd = -1; // fd of server's FIFO, open for writes only
+int read_fd = -1; // fd of this client's FIFO, open for reads only
+int session_id = -1;
 char pipe_path[FIFO_NAME_SIZE];
-
+bool init = false;
 
 int tfs_mount(char const *client_pipe_path, char const *server_pipe_path) {
+    if (init) // no mounting without unmounting before
+        return -1;
     if (unlink(client_pipe_path) != 0 && errno != ENOENT)
         return -1;
-    if (mkfifo(client_pipe_path, 0777) != 0) 
+    if (mkfifo(client_pipe_path, 0777) != 0) // stupid permissions, taken from the lecture slides
         return -1;
 
-    if ((write_fd = open(server_pipe_path, O_WRONLY)) == -1) {
+    while ((write_fd = open(server_pipe_path, O_WRONLY)) == -1) {
+        if (errno = EINTR)
+            continue;
         unlink(client_pipe_path);
         return -1;
     }
@@ -50,10 +55,14 @@ int tfs_mount(char const *client_pipe_path, char const *server_pipe_path) {
         return -1;
     }
     memcpy(pipe_path, client_pipe_path, FIFO_NAME_SIZE); 
+    init = true;
     return 0;
 }
 
 int tfs_unmount() {
+    if (!init)
+        return -1;
+    init = false; // even if it fails, if we called unmount we are allowed to call mount again
     char buffer[PIPE_BUF];
     size_t len = 1 + sizeof(session_id);
     if (len > PIPE_BUF)
@@ -83,6 +92,8 @@ int tfs_unmount() {
 }
 
 int tfs_open(char const *name, int flags) {
+    if (!init)
+        return -1;
     char buffer[PIPE_BUF];
     size_t len = 1 + sizeof(session_id) + MAX_FILE_NAME + sizeof(flags);
     if (len > PIPE_BUF)
@@ -111,6 +122,8 @@ int tfs_open(char const *name, int flags) {
 }
 
 int tfs_close(int fhandle) {
+    if (!init)
+        return -1;
     char buffer[PIPE_BUF];
     size_t len = 1 + sizeof(session_id) + sizeof(fhandle);
     if (len > PIPE_BUF)
@@ -137,6 +150,8 @@ int tfs_close(int fhandle) {
 }
 
 ssize_t tfs_write(int fhandle, void const *buffer, size_t len) {
+    if (!init)
+        return -1;
     char send_buffer[PIPE_BUF];
     size_t fixed_buf_len = 1 + sizeof(session_id) + sizeof(fhandle) + sizeof(len); 
     if (fixed_buf_len > PIPE_BUF)
@@ -176,6 +191,8 @@ ssize_t tfs_write(int fhandle, void const *buffer, size_t len) {
 }
 
 ssize_t tfs_read(int fhandle, void *buffer, size_t len) {
+    if (!init)
+        return -1;
     char send_buffer[PIPE_BUF];
     size_t buf_len = 1 + sizeof(session_id) + sizeof(fhandle) + sizeof(len); 
     if (buf_len > PIPE_BUF)
@@ -214,6 +231,8 @@ ssize_t tfs_read(int fhandle, void *buffer, size_t len) {
 }
 
 int tfs_shutdown_after_all_closed() {
+    if (!init)
+        return -1;
     char buffer[PIPE_BUF];      
     size_t len = 1 + sizeof(session_id);
     if (len > PIPE_BUF)
@@ -234,5 +253,6 @@ int tfs_shutdown_after_all_closed() {
         unlink(pipe_path);
         return -1;
     }
+    init = false;
     return ret_code;
 }

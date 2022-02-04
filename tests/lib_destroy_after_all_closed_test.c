@@ -41,6 +41,7 @@ int main() {
     f = tfs_open("/f1", TFS_O_CREAT);
     assert(f != -1);
     assert(pthread_create(&t, NULL, fn_thread, NULL) == 0);
+    assert(pthread_detach(t) == 0);
     assert(tfs_destroy_after_all_closed() != -1);
     assert(closed_file == 1);
 

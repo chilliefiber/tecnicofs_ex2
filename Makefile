@@ -14,8 +14,7 @@ INCLUDES = $(addprefix -I, $(INCLUDE_DIRS))
 SOURCES  := $(wildcard */*.c)
 HEADERS  := $(wildcard */*.h)
 OBJECTS  := $(SOURCES:.c=.o)
-TARGET_EXECS := fs/tfs_server tests/lib_destroy_after_all_closed_test tests/client_server_simple_test tests/lib_destroy_after_all_closed_test_martim tests/client_server_simple_test_correia tests/client_server_shutdown_test
-
+TARGET_EXECS := fs/tfs_server tests/lib_destroy_after_all_closed_test tests/client_server_simple_test tests/lib_destroy_after_all_closed_test_martim tests/client_server_simple_test_correia tests/client_server_shutdown_test 
 # VPATH is a variable used by Makefile which finds *sources* and makes them available throughout the codebase
 # vpath %.h <DIR> tells make to look for header files in <DIR>
 vpath # clears VPATH
@@ -27,7 +26,7 @@ CFLAGS += $(INCLUDES)
 # Warnings
 CFLAGS += -fdiagnostics-color=always -Wall -Wextra -Wcast-align -Wconversion -Wfloat-equal -Wformat=2 -Wnull-dereference -Wshadow -Wsign-conversion -Wswitch-default -Wswitch-enum -Wundef -Wunreachable-code -Wunused 
 # Warning suppressions
-CFLAGS += -Wno-sign-compare -fsanitize=thread
+CFLAGS += -Wno-sign-compare
 
 # optional debug symbols: run make DEBUG=no to deactivate them
 ifneq ($(strip $(DEBUG)), no)
@@ -41,7 +40,7 @@ else
   CFLAGS += -O3
 endif
 
-LDFLAGS = -pthread -fsanitize=thread
+LDFLAGS = -pthread 
 
 # A phony target is one that is not really the name of a file
 # https://www.gnu.org/software/make/manual/html_node/Phony-Targets.html
